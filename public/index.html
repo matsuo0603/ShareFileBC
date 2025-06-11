@@ -1,0 +1,18 @@
+<body>
+<p>アプリに移動しています。移動しない場合は <a id="manualLink" href="#">こちら</a> をタップしてください。</p>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const params = new URLSearchParams(window.location.search);
+      const folderId = params.get("folderId"); // ✅ パラメータ名を修正
+
+      if (folderId) {
+        const deepLink = `sharefilebc://download?folderId=${folderId}`; // ✅ URL構築を修正
+        document.getElementById("manualLink").href = deepLink;
+        window.location.href = deepLink;
+      } else {
+        document.body.innerHTML = "<p>フォルダIDが指定されていません。</p>";
+      }
+    });
+</script>
+</body>
