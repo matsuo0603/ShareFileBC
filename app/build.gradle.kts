@@ -3,17 +3,17 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("org.jetbrains.kotlin.kapt")
+    alias(libs.plugins.ksp)
 }
 
 android {
     namespace = "com.example.sharefilebc"
-    compileSdk = 34  // 35から34に下げて安定性を確保
+    compileSdk = 35  // 35から34に下げて安定性を確保
 
     defaultConfig {
         applicationId = "com.example.sharefilebc"
         minSdk = 24
-        targetSdk = 34  // targetSdkも一致させる
+        targetSdk = 35  // targetSdkも一致させる
         versionCode = 1
         versionName = "1.0"
 
@@ -45,13 +45,20 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
     }
+    applicationVariants.all {
+        kotlin.sourceSets.getByName(name) {
+            kotlin.srcDir("build/generated/ksp/$name/kotlin/")
+        }
+    }
 }
 
 dependencies {
+    implementation("com.jakewharton.threetenabp:threetenabp:1.4.5")
+
     //Room
-    implementation("androidx.room:room-runtime:2.6.1")
-    kapt("androidx.room:room-compiler:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 
     // Firebase - BOMを統一
     implementation(platform("com.google.firebase:firebase-bom:33.12.0"))
@@ -106,10 +113,7 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
-}
 
-kapt {
-    arguments {
-        arg("room.schemaLocation", "$projectDir/schemas")
-    }
+    //WorkManagerライブラリ
+    implementation (libs.androidx.work.runtime.ktx)
 }

@@ -15,9 +15,13 @@ interface ReceivedFolderDao {
     @Update
     suspend fun update(receivedFolder: ReceivedFolderEntity)
 
-    // 全ての受信フォルダを取得（最新順）
+    // ✅ UIで使う：リアルタイムに監視する用（Flow）
     @Query("SELECT * FROM received_folders ORDER BY lastAccessDate DESC")
     fun getAll(): Flow<List<ReceivedFolderEntity>>
+
+    // ✅ バッチ処理で使う：即時取得用
+    @Query("SELECT * FROM received_folders ORDER BY lastAccessDate DESC")
+    suspend fun getAllOnce(): List<ReceivedFolderEntity>
 
     // 特定のフォルダIDが既に保存されているかチェック
     @Query("SELECT * FROM received_folders WHERE folderId = :folderId LIMIT 1")
@@ -26,4 +30,7 @@ interface ReceivedFolderDao {
     // 最後のアクセス日時を更新
     @Query("UPDATE received_folders SET lastAccessDate = :accessDate WHERE folderId = :folderId")
     suspend fun updateLastAccessDate(folderId: String, accessDate: String)
+
+    @Query("DELETE FROM received_folders WHERE id = :id")
+    fun deleteById(id: Int)
 }

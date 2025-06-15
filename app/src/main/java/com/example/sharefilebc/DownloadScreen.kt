@@ -1,5 +1,6 @@
 package com.example.sharefilebc.ui
 
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import org.threeten.bp.LocalDateTime
+import org.threeten.bp.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,16 +36,30 @@ fun DownloadScreen(initialFolderId: String?) {
     val db = remember { AppDatabase.getDatabase(context) }
     val receivedFolderDao = db.receivedFolderDao()
 
-    // Deep Linkでフォルダが指定された場合の処理
+    // ✅ 削除予定時間を計算する関数
+    fun calculateDeleteTime(receivedDate: String): String {
+        return try {
+            val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+            val receivedDateTime = LocalDateTime.parse(receivedDate, formatter)
+            val deleteDateTime = receivedDateTime.plusMinutes(15)
+            deleteDateTime.format(DateTimeFormatter.ofPattern("HH:mm"))
+        } catch (e: Exception) {
+            "不明"
+        }
+    }
+
+    // 🟦 Deep Linkでフォルダが指定された場合の処理
     LaunchedEffect(initialFolderId) {
         if (initialFolderId != null) {
+            Log.d("DownloadScreen", "🟦 initialFolderId = $initialFolderId")
             isLoading = true
             val folderStructure = downloader.getFolderStructure(initialFolderId)
             if (folderStructure != null) {
+                Log.d("DownloadScreen", "🟩 folderStructure 取得成功: ${folderStructure.folderName}")
                 currentFolderStructure = folderStructure
 
                 val existingFolder = receivedFolderDao.findByFolderId(initialFolderId)
-                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
 
                 if (existingFolder != null) {
                     receivedFolderDao.updateLastAccessDate(initialFolderId, currentDate)
@@ -58,12 +75,14 @@ fun DownloadScreen(initialFolderId: String?) {
                     receivedFolderDao.insert(newFolder)
                     selectedFolder = newFolder
                 }
+            } else {
+                Log.e("DownloadScreen", "🟥 folderStructure が取得できませんでした（null）")
             }
             isLoading = false
         }
     }
 
-    // 受信フォルダ一覧を取得
+    // 📥 受信フォルダ一覧を取得
     LaunchedEffect(Unit) {
         receivedFolderDao.getAll().collectLatest { folders ->
             receivedFolders = folders
@@ -89,7 +108,6 @@ fun DownloadScreen(initialFolderId: String?) {
                 val folderStructure = currentFolderStructure
 
                 if (folder != null && folderStructure != null) {
-                    // フォルダ内容表示
                     Button(
                         onClick = {
                             coroutineScope.launch {
@@ -103,17 +121,8 @@ fun DownloadScreen(initialFolderId: String?) {
                         Text("← フォルダ一覧に戻る")
                     }
 
-                    Text(
-                        "📁 ${folderStructure.folderName}",
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    Text(
-                        "送信者: ${folderStructure.senderName}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
+                    Text("📁 ${folderStructure.folderName}", style = MaterialTheme.typography.titleLarge)
+                    Text("送信者: ${folderStructure.senderName}", style = MaterialTheme.typography.bodyMedium)
 
                     if (folderStructure.files.isEmpty()) {
                         Text("このフォルダにはファイルがありません。")
@@ -134,15 +143,17 @@ fun DownloadScreen(initialFolderId: String?) {
                                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                file.name,
-                                                style = MaterialTheme.typography.titleMedium
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(file.name, style = MaterialTheme.typography.titleMedium)
                                             Text(
                                                 file.mimeType ?: "Unknown Type",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            // ✅ 削除予定時間を表示
+                                            Text(
+                                                "${calculateDeleteTime(folder.receivedDate)}に削除予定",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error
                                             )
                                         }
                                         Button(onClick = {
@@ -158,15 +169,10 @@ fun DownloadScreen(initialFolderId: String?) {
                         }
                     }
                 } else {
-                    // フォルダ一覧表示
-                    Text(
-                        "受信したフォルダ一覧",
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
+                    Text("受信したフォルダ一覧", style = MaterialTheme.typography.titleLarge)
 
                     if (receivedFolders.isEmpty()) {
-                        Text("受信したフォルダがありません。", style = MaterialTheme.typography.bodyMedium)
+                        Text("受信したフォルダがありません。")
                     } else {
                         LazyColumn {
                             items(receivedFolders) { folderItem ->
@@ -180,7 +186,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                                 isLoading = true
                                                 val folderStructure = downloader.getFolderStructure(folderItem.folderId)
                                                 currentFolderStructure = folderStructure
-                                                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                                                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
                                                 receivedFolderDao.updateLastAccessDate(folderItem.folderId, currentDate)
                                                 isLoading = false
                                             }
@@ -188,19 +194,18 @@ fun DownloadScreen(initialFolderId: String?) {
                                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
+                                        Text("📁 ${folderItem.folderName}", style = MaterialTheme.typography.titleMedium)
+                                        Text("送信者: ${folderItem.senderName}", style = MaterialTheme.typography.bodyMedium)
                                         Text(
-                                            text = "📁 ${folderItem.folderName}",
-                                            style = MaterialTheme.typography.titleMedium
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "送信者: ${folderItem.senderName}",
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                        Text(
-                                            text = "受信日: ${folderItem.receivedDate}",
+                                            "受信日: ${folderItem.receivedDate}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        // ✅ フォルダ一覧でも削除予定時間を表示
+                                        Text(
+                                            "${calculateDeleteTime(folderItem.receivedDate)}に削除予定",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error
                                         )
                                     }
                                 }

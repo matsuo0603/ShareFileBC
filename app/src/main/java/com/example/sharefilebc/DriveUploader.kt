@@ -37,7 +37,6 @@ class DriveUploader(private val context: Context) {
         ).setApplicationName("ShareFileBC").build()
     }
 
-    // New method to resolve the "Unresolved reference" error in HomeScreen.kt
     // フォルダID、ファイルID、ファイル名をまとめて返すように変更
     suspend fun uploadFileAndRecord(fileUri: Uri, recipientName: String, db: AppDatabase): Triple<String, String, String>? {
         return withContext(Dispatchers.IO) {
@@ -108,12 +107,13 @@ class DriveUploader(private val context: Context) {
                     return@withContext null
                 }
 
-                // 日付フォルダを作成または取得 (今回はファイルごとに日付フォルダを作成せず、Recipientフォルダ直下にファイルを置く、または新しい日付フォルダロジックを検討)
-                // 頂いた仕様に「共有相手ごとにフォルダを作成し、日付単位で分類」とあるので、日付フォルダを Recipientフォルダの下に作成します。
-                val currentDate = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                // ✅ 日付フォルダを作成または取得（yyyy-MM-dd形式に変更）
+                val currentDateOnly = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                val currentDateTimeForRecord = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+
                 var dateFolderId: String? = null
                 val existingDateFolders = driveService.files().list()
-                    .setQ("mimeType='application/vnd.google-apps.folder' and name='$currentDate' and '$recipientFolderId' in parents and trashed=false")
+                    .setQ("mimeType='application/vnd.google-apps.folder' and name='$currentDateOnly' and '$recipientFolderId' in parents and trashed=false")
                     .setFields("files(id)")
                     .execute()
 
@@ -121,7 +121,7 @@ class DriveUploader(private val context: Context) {
                     dateFolderId = existingDateFolders.files[0].id
                 } else {
                     val dateFolderMetadata = File().apply {
-                        name = currentDate
+                        name = currentDateOnly // yyyy-MM-dd形式
                         mimeType = "application/vnd.google-apps.folder"
                         parents = listOf(recipientFolderId)
                     }
@@ -132,7 +132,7 @@ class DriveUploader(private val context: Context) {
                 }
 
                 if (dateFolderId == null) {
-                    Log.e("DriveUploader", "Failed to create or find date folder for $currentDate")
+                    Log.e("DriveUploader", "Failed to create or find date folder for $currentDateOnly")
                     return@withContext null
                 }
 
@@ -150,11 +150,11 @@ class DriveUploader(private val context: Context) {
                 val fileId = uploadedFile.id // Google Drive上のファイルID
                 val webViewLink = uploadedFile.webViewLink // Get the webViewLink
 
-                // Record in Room database - file information included
+                // ✅ Record in Room database - 削除判定用に分単位の時刻で記録
                 val dao = db.sharedFolderDao()
                 dao.insert(
                     SharedFolderEntity(
-                        date = currentDate, // 現在の日付
+                        date = currentDateTimeForRecord, // 削除判定用に分単位で記録
                         recipientName = recipientName,
                         folderId = dateFolderId, // 保存された日付フォルダのID
                         fileName = fileName, // ファイル名も保存
