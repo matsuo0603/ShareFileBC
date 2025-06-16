@@ -51,8 +51,7 @@ class DriveUploader(private val context: Context) {
                 } ?: "Unknown File"
 
                 // Read file bytes from Uri
-                val inputStream: InputStream? = context.contentResolver.openInputStream(fileUri)
-                val fileBytes = inputStream?.readBytes() ?: return@withContext null
+                val fileBytes = context.contentResolver.openInputStream(fileUri)?.use { it.readBytes() } ?: return@withContext null
 
                 // Create a new folder for the recipient if it doesn't exist under ShareFileBCApp
                 // まず ShareFileBCApp ルートフォルダのIDを取得または作成
