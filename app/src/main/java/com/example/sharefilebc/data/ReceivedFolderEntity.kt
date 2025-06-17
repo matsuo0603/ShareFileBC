@@ -9,6 +9,7 @@ data class ReceivedFolderEntity(
     val folderId: String,          // Google DriveのフォルダID
     val folderName: String,        // フォルダ名（日付など）
     val senderName: String,        // 送信者名（フォルダ構造から推測）
+    val uploadDate: String,        // アップロード日時
     val receivedDate: String,      // 受信日時
     val lastAccessDate: String     // 最後にアクセスした日時
 )

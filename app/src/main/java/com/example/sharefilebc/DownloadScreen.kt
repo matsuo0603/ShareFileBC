@@ -37,11 +37,11 @@ fun DownloadScreen(initialFolderId: String?) {
     val receivedFolderDao = db.receivedFolderDao()
 
     // ✅ 削除予定時間を計算する関数
-    fun calculateDeleteTime(receivedDate: String): String {
+    fun calculateDeleteTime(uploadDate: String): String {
         return try {
             val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-            val receivedDateTime = LocalDateTime.parse(receivedDate, formatter)
-            val deleteDateTime = receivedDateTime.plusMinutes(15)
+            val uploadDateTime = LocalDateTime.parse(uploadDate, formatter)
+            val deleteDateTime = uploadDateTime.plusMinutes(15)
             deleteDateTime.format(DateTimeFormatter.ofPattern("HH:mm"))
         } catch (e: Exception) {
             "不明"
@@ -69,6 +69,7 @@ fun DownloadScreen(initialFolderId: String?) {
                         folderId = initialFolderId,
                         folderName = folderStructure.folderName,
                         senderName = folderStructure.senderName,
+                        uploadDate = folderStructure.uploadDate,
                         receivedDate = currentDate,
                         lastAccessDate = currentDate
                     )
@@ -151,7 +152,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                             )
                                             // ✅ 削除予定時間を表示
                                             Text(
-                                                "${calculateDeleteTime(folder.receivedDate)}に削除予定",
+                                                "${calculateDeleteTime(folder.uploadDate)}に削除予定",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.error
                                             )
@@ -203,7 +204,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                         )
                                         // ✅ フォルダ一覧でも削除予定時間を表示
                                         Text(
-                                            "${calculateDeleteTime(folderItem.receivedDate)}に削除予定",
+                                            "${calculateDeleteTime(folderItem.uploadDate)}に削除予定",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.error
                                         )

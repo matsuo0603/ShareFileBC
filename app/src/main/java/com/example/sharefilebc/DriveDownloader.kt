@@ -27,6 +27,7 @@ data class DriveFileInfo(
 data class FolderStructure(
     val folderName: String,  // 日付フォルダ名
     val senderName: String,  // 送信者名（親フォルダから推測）
+    val uploadDate: String,  // フォルダの作成日時
     val files: List<DriveFileInfo>
 )
 
@@ -68,7 +69,7 @@ class DriveDownloader(private val context: Context) {
 
                 // フォルダ自体の情報を取得
                 val folderInfo = driveService.files().get(folderId)
-                    .setFields("id, name, parents")
+                    .setFields("id, name, parents, createdTime")
                     .execute()
 
                 // 親フォルダの情報を取得して送信者名を推測
@@ -100,9 +101,15 @@ class DriveDownloader(private val context: Context) {
                     )
                 } ?: emptyList()
 
+                val uploadDate = folderInfo.createdTime?.let { created ->
+                    val millis = created.value
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(java.util.Date(millis))
+                } ?: java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(java.util.Date())
+
                 FolderStructure(
                     folderName = folderInfo.name ?: "Unknown Date",
                     senderName = senderName,
+                    uploadDate = uploadDate,
                     files = files
                 )
             } catch (e: Exception) {

@@ -32,10 +32,10 @@ object FileDeleter {
 
         val expired = allFolders.filter { entry ->
             try {
-                val entryDate = LocalDateTime.parse(entry.receivedDate, formatter)
+                val entryDate = LocalDateTime.parse(entry.uploadDate, formatter)
                 entryDate.isBefore(now.minusMinutes(15)) // ✅ 15分に変更
             } catch (e: Exception) {
-                Log.e("FileDeleter", "日付解析エラー: ${entry.receivedDate}", e)
+                Log.e("FileDeleter", "日付解析エラー: ${entry.uploadDate}", e)
                 false
             }
         }
