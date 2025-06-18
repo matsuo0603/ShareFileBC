@@ -1,4 +1,4 @@
-package com.example.sharefilebc.ui
+package com.example.sharefilebc
 
 import android.util.Log
 import androidx.compose.foundation.clickable
@@ -10,8 +10,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.sharefilebc.DriveDownloader
-import com.example.sharefilebc.FolderStructure
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.ReceivedFolderEntity
 import kotlinx.coroutines.flow.collectLatest
@@ -21,7 +19,6 @@ import java.util.*
 import org.threeten.bp.LocalDateTime
 import org.threeten.bp.format.DateTimeFormatter
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadScreen(initialFolderId: String?) {
     val context = LocalContext.current
@@ -36,16 +33,25 @@ fun DownloadScreen(initialFolderId: String?) {
     val db = remember { AppDatabase.getDatabase(context) }
     val receivedFolderDao = db.receivedFolderDao()
 
-    // ✅ 削除予定時間を計算する関数
-    fun calculateDeleteTime(receivedDate: String): String {
+    // ✅ 削除予定時間を計算する関数（JST時間で処理）
+    fun calculateDeleteTime(uploadDate: String): String {
         return try {
             val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-            val receivedDateTime = LocalDateTime.parse(receivedDate, formatter)
-            val deleteDateTime = receivedDateTime.plusMinutes(15)
+            val uploadDateTime = LocalDateTime.parse(uploadDate, formatter)
+            val deleteDateTime = uploadDateTime.plusMinutes(15)
             deleteDateTime.format(DateTimeFormatter.ofPattern("HH:mm"))
         } catch (e: Exception) {
+            Log.e("DownloadScreen", "削除時間計算エラー: $uploadDate", e)
             "不明"
         }
+    }
+
+    // ✅ JST時間での現在時刻を取得する関数
+    fun getCurrentJSTTime(): String {
+        val jstTimeZone = TimeZone.getTimeZone("Asia/Tokyo")
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        formatter.timeZone = jstTimeZone
+        return formatter.format(Date())
     }
 
     // 🟦 Deep Linkでフォルダが指定された場合の処理
@@ -53,13 +59,15 @@ fun DownloadScreen(initialFolderId: String?) {
         if (initialFolderId != null) {
             Log.d("DownloadScreen", "🟦 initialFolderId = $initialFolderId")
             isLoading = true
+
             val folderStructure = downloader.getFolderStructure(initialFolderId)
             if (folderStructure != null) {
                 Log.d("DownloadScreen", "🟩 folderStructure 取得成功: ${folderStructure.folderName}")
+                Log.d("DownloadScreen", "📅 アップロード日時: ${folderStructure.uploadDate}")
                 currentFolderStructure = folderStructure
 
                 val existingFolder = receivedFolderDao.findByFolderId(initialFolderId)
-                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+                val currentDate = getCurrentJSTTime()
 
                 if (existingFolder != null) {
                     receivedFolderDao.updateLastAccessDate(initialFolderId, currentDate)
@@ -69,11 +77,13 @@ fun DownloadScreen(initialFolderId: String?) {
                         folderId = initialFolderId,
                         folderName = folderStructure.folderName,
                         senderName = folderStructure.senderName,
-                        receivedDate = currentDate,
+                        uploadDate = folderStructure.uploadDate,     // Google Driveから取得したJST時間
+                        receivedDate = currentDate,                  // 現在のJST時間
                         lastAccessDate = currentDate
                     )
                     receivedFolderDao.insert(newFolder)
                     selectedFolder = newFolder
+                    Log.d("DownloadScreen", "📅 新規フォルダ保存 - アップロード日時: ${folderStructure.uploadDate}")
                 }
             } else {
                 Log.e("DownloadScreen", "🟥 folderStructure が取得できませんでした（null）")
@@ -123,6 +133,7 @@ fun DownloadScreen(initialFolderId: String?) {
 
                     Text("📁 ${folderStructure.folderName}", style = MaterialTheme.typography.titleLarge)
                     Text("送信者: ${folderStructure.senderName}", style = MaterialTheme.typography.bodyMedium)
+                    Text("アップロード日時: ${folder.uploadDate}", style = MaterialTheme.typography.bodySmall)
 
                     if (folderStructure.files.isEmpty()) {
                         Text("このフォルダにはファイルがありません。")
@@ -133,7 +144,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                                 ) {
                                     Row(
                                         modifier = Modifier
@@ -151,7 +162,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                             )
                                             // ✅ 削除予定時間を表示
                                             Text(
-                                                "${calculateDeleteTime(folder.receivedDate)}に削除予定",
+                                                "${calculateDeleteTime(folder.uploadDate)}に削除予定",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.error
                                             )
@@ -184,14 +195,15 @@ fun DownloadScreen(initialFolderId: String?) {
                                             selectedFolder = folderItem
                                             coroutineScope.launch {
                                                 isLoading = true
-                                                val folderStructure = downloader.getFolderStructure(folderItem.folderId)
-                                                currentFolderStructure = folderStructure
-                                                val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+                                                val newFolderStructure = downloader.getFolderStructure(folderItem.folderId)
+                                                currentFolderStructure = newFolderStructure
+
+                                                val currentDate = getCurrentJSTTime()
                                                 receivedFolderDao.updateLastAccessDate(folderItem.folderId, currentDate)
                                                 isLoading = false
                                             }
                                         },
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
                                         Text("📁 ${folderItem.folderName}", style = MaterialTheme.typography.titleMedium)
@@ -201,9 +213,14 @@ fun DownloadScreen(initialFolderId: String?) {
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                        Text(
+                                            "アップロード日時: ${folderItem.uploadDate}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                         // ✅ フォルダ一覧でも削除予定時間を表示
                                         Text(
-                                            "${calculateDeleteTime(folderItem.receivedDate)}に削除予定",
+                                            "${calculateDeleteTime(folderItem.uploadDate)}に削除予定",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.error
                                         )

@@ -11,7 +11,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.padding
 import com.example.sharefilebc.ui.HomeScreen
-import com.example.sharefilebc.ui.DownloadScreen
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.example.sharefilebc.ui.BottomTab
 import com.example.sharefilebc.ui.BottomNavigationBar

@@ -5,7 +5,6 @@ import android.media.MediaScannerConnection
 import android.os.Environment
 import android.util.Log
 import android.widget.Toast
-import androidx.core.app.ActivityCompat
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -13,9 +12,11 @@ import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.File
-import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.*
 
 data class DriveFileInfo(
     val id: String,
@@ -27,6 +28,7 @@ data class DriveFileInfo(
 data class FolderStructure(
     val folderName: String,  // 日付フォルダ名
     val senderName: String,  // 送信者名（親フォルダから推測）
+    val uploadDate: String,  // フォルダの作成日時（JST）
     val files: List<DriveFileInfo>
 )
 
@@ -47,31 +49,15 @@ class DriveDownloader(private val context: Context) {
         ).setApplicationName("ShareFileBC").build()
     }
 
-    fun listFilesInFolder(folderId: String): List<File> {
-        return try {
-            val result = getDriveService()?.files()?.list()
-                ?.setQ("'$folderId' in parents and trashed = false")
-                ?.setFields("files(id, name, mimeType)")
-                ?.execute()
-            result?.files ?: emptyList()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            emptyList()
-        }
-    }
-
-    // フォルダIDから詳細な構造情報を取得
     suspend fun getFolderStructure(folderId: String): FolderStructure? {
         return withContext(Dispatchers.IO) {
             try {
                 val driveService = getDriveService() ?: return@withContext null
 
-                // フォルダ自体の情報を取得
                 val folderInfo = driveService.files().get(folderId)
-                    .setFields("id, name, parents")
+                    .setFields("id, name, parents, createdTime")
                     .execute()
 
-                // 親フォルダの情報を取得して送信者名を推測
                 val senderName = if (folderInfo.parents != null && folderInfo.parents.isNotEmpty()) {
                     try {
                         val parentFolder = driveService.files().get(folderInfo.parents[0])
@@ -85,7 +71,6 @@ class DriveDownloader(private val context: Context) {
                     "Unknown Sender"
                 }
 
-                // フォルダ内のファイル一覧を取得
                 val filesResult = driveService.files().list()
                     .setQ("'$folderId' in parents and trashed = false")
                     .setFields("files(id, name, mimeType)")
@@ -100,9 +85,42 @@ class DriveDownloader(private val context: Context) {
                     )
                 } ?: emptyList()
 
+                // ✅ JST時間を正しく取得・変換
+                val uploadDate = folderInfo.createdTime?.let { created ->
+                    try {
+                        // Google Drive APIから取得した時間はUTC
+                        val utcMillis = created.value
+
+                        // JSTのCalendarインスタンスを作成
+                        val jstCalendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
+                        jstCalendar.timeInMillis = utcMillis
+
+                        // JST時間でフォーマット
+                        val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                        jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                        val formatted = jstFormatter.format(jstCalendar.time)
+
+                        Log.d("DriveDownloader", "📅 UTC millis: $utcMillis")
+                        Log.d("DriveDownloader", "📅 JST uploadDate: $formatted")
+                        formatted
+                    } catch (e: Exception) {
+                        Log.e("DriveDownloader", "時間変換エラー", e)
+                        // エラー時は現在のJST時間を使用
+                        val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                        jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                        jstFormatter.format(Date())
+                    }
+                } ?: run {
+                    // createdTimeがnullの場合は現在のJST時間を使用
+                    val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                    jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                    jstFormatter.format(Date())
+                }
+
                 FolderStructure(
                     folderName = folderInfo.name ?: "Unknown Date",
                     senderName = senderName,
+                    uploadDate = uploadDate,
                     files = files
                 )
             } catch (e: Exception) {
@@ -115,7 +133,6 @@ class DriveDownloader(private val context: Context) {
         }
     }
 
-    // suspend 関数に変更し、UIスレッドでのToast表示を可能にする
     suspend fun downloadFile(fileId: String): java.io.File? {
         return withContext(Dispatchers.IO) {
             try {
@@ -127,9 +144,8 @@ class DriveDownloader(private val context: Context) {
                     }
                     return@withContext null
                 }
-                val fileMetadata = driveService.files().get(fileId).execute()
 
-                // ✅ 保存先を Download フォルダに変更
+                val fileMetadata = driveService.files().get(fileId).execute()
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val outputFile = java.io.File(downloadsDir, fileMetadata.name)
 
@@ -137,7 +153,6 @@ class DriveDownloader(private val context: Context) {
                     driveService.files().get(fileId).executeMediaAndDownloadTo(outputStream)
                 }
 
-                // ✅ ダウンロード完了後に MediaScanner で反映
                 MediaScannerConnection.scanFile(
                     context,
                     arrayOf(outputFile.absolutePath),
@@ -149,6 +164,7 @@ class DriveDownloader(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "${fileMetadata.name} をダウンロードしました。", Toast.LENGTH_LONG).show()
                 }
+
                 outputFile
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "❌ ダウンロードエラー", e)

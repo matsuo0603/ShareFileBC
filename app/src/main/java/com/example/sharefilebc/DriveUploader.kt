@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.text.SimpleDateFormat
 import java.util.*
 
 class DriveUploader(private val context: Context) {
@@ -107,9 +108,21 @@ class DriveUploader(private val context: Context) {
                     return@withContext null
                 }
 
-                // ✅ 日付フォルダを作成または取得（yyyy-MM-dd形式に変更）
-                val currentDateOnly = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                val currentDateTimeForRecord = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+                // ✅ JST時間で日付フォルダを作成または取得
+                val jstTimeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                val jstCalendar = Calendar.getInstance(jstTimeZone)
+
+                // 日付のみのフォーマッター（yyyy-MM-dd）
+                val dateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                dateFormatter.timeZone = jstTimeZone
+                val currentDateOnly = dateFormatter.format(jstCalendar.time)
+
+                // 日時のフォーマッター（yyyy-MM-dd HH:mm）
+                val dateTimeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                dateTimeFormatter.timeZone = jstTimeZone
+                val currentDateTimeForRecord = dateTimeFormatter.format(jstCalendar.time)
+
+                Log.d("DriveUploader", "📅 JST現在時刻: $currentDateTimeForRecord")
 
                 var dateFolderId: String? = null
                 val existingDateFolders = driveService.files().list()
@@ -150,11 +163,11 @@ class DriveUploader(private val context: Context) {
                 val fileId = uploadedFile.id // Google Drive上のファイルID
                 val webViewLink = uploadedFile.webViewLink // Get the webViewLink
 
-                // ✅ Record in Room database - 削除判定用に分単位の時刻で記録
+                // ✅ Record in Room database - JST時間で記録
                 val dao = db.sharedFolderDao()
                 dao.insert(
                     SharedFolderEntity(
-                        date = currentDateTimeForRecord, // 削除判定用に分単位で記録
+                        date = currentDateTimeForRecord, // JST時間で記録
                         recipientName = recipientName,
                         folderId = dateFolderId, // 保存された日付フォルダのID
                         fileName = fileName, // ファイル名も保存
@@ -162,6 +175,7 @@ class DriveUploader(private val context: Context) {
                     )
                 )
                 Log.d("DriveUploader", "Uploaded File ID: $fileId, Folder ID: $dateFolderId, Web View Link: $webViewLink, FileName: $fileName")
+                Log.d("DriveUploader", "📅 アップロード時刻(JST): $currentDateTimeForRecord")
 
                 return@withContext Triple(fileName, fileId, dateFolderId) // Return fileName, fileId, and folderId
             } catch (e: Exception) {
