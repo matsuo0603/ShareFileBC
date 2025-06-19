@@ -4,12 +4,12 @@ import android.content.Context
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
-import kotlinx.coroutines.runBlocking
+
 import java.text.SimpleDateFormat
 import java.util.*
 
 object FileDeleter {
-    fun deleteExpiredFiles(context: Context) = runBlocking {
+    suspend fun deleteExpiredFiles(context: Context, skipDriveDeletion: Boolean = false) {
         Log.d("FileDeleter", "🧹 削除処理開始")
 
         val db = AppDatabase.getDatabase(context)
@@ -17,8 +17,8 @@ object FileDeleter {
         val sharedFolderDao = db.sharedFolderDao()
 
         // ✅ 受信者側と送信者側の両方を処理
-        deleteExpiredReceivedFiles(context, receivedFolderDao)
-        deleteExpiredSharedFiles(context, sharedFolderDao)
+        deleteExpiredReceivedFiles(context, receivedFolderDao, skipDriveDeletion)
+        deleteExpiredSharedFiles(context, sharedFolderDao, skipDriveDeletion)
 
         Log.d("FileDeleter", "🧹 削除処理終了")
     }
@@ -57,7 +57,11 @@ object FileDeleter {
         return formatter.format(date)
     }
 
-    private suspend fun deleteExpiredReceivedFiles(context: Context, dao: com.example.sharefilebc.data.ReceivedFolderDao) {
+    private suspend fun deleteExpiredReceivedFiles(
+        context: Context,
+        dao: com.example.sharefilebc.data.ReceivedFolderDao,
+        skipDriveDeletion: Boolean
+    ) {
         val allFolders = dao.getAllOnce()
         val currentJSTTime = getCurrentJSTTime()
 
@@ -83,24 +87,35 @@ object FileDeleter {
 
         Log.d("FileDeleter", "⏰ 削除対象受信フォルダ数: ${expired.size}")
 
-        try {
-            val driveService = DriveServiceHelper.getDriveService(context)
-            expired.forEach { entry ->
-                try {
-                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDate}")
-                    driveService.files().delete(entry.folderId).execute()
-                    dao.deleteById(entry.id)
-                    Log.d("FileDeleter", "✅ 受信フォルダ削除成功: ${entry.folderId}")
-                } catch (e: Exception) {
-                    Log.e("FileDeleter", "❌ 受信フォルダ削除失敗: ${entry.folderId}", e)
+        if (skipDriveDeletion) {
+            expired.forEach { dao.deleteById(it.id) }
+        } else {
+            try {
+                val driveService = DriveServiceHelper.getDriveService(context)
+                expired.forEach { entry ->
+                    try {
+                        Log.d(
+                            "FileDeleter",
+                            "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDate}"
+                        )
+                        driveService.files().delete(entry.folderId).execute()
+                        dao.deleteById(entry.id)
+                        Log.d("FileDeleter", "✅ 受信フォルダ削除成功: ${entry.folderId}")
+                    } catch (e: Exception) {
+                        Log.e("FileDeleter", "❌ 受信フォルダ削除失敗: ${entry.folderId}", e)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("FileDeleter", "Google Drive接続エラー（受信側）", e)
             }
-        } catch (e: Exception) {
-            Log.e("FileDeleter", "Google Drive接続エラー（受信側）", e)
         }
     }
 
-    private suspend fun deleteExpiredSharedFiles(context: Context, dao: com.example.sharefilebc.data.SharedFolderDao) {
+    private suspend fun deleteExpiredSharedFiles(
+        context: Context,
+        dao: com.example.sharefilebc.data.SharedFolderDao,
+        skipDriveDeletion: Boolean
+    ) {
         val allSharedFiles = dao.getAllOnce()
         val currentJSTTime = getCurrentJSTTime()
 
@@ -126,22 +141,27 @@ object FileDeleter {
 
         Log.d("FileDeleter", "⏰ 削除対象共有ファイル数: ${expired.size}")
 
-        try {
-            val driveService = DriveServiceHelper.getDriveService(context)
-            expired.forEach { entry ->
-                try {
-                    Log.d("FileDeleter", "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}")
-                    // ✅ ファイル自体を削除
-                    driveService.files().delete(entry.fileGoogleDriveId).execute()
-                    // ✅ DBからも削除
-                    dao.deleteById(entry.id)
-                    Log.d("FileDeleter", "✅ 共有ファイル削除成功: ${entry.fileGoogleDriveId}")
-                } catch (e: Exception) {
-                    Log.e("FileDeleter", "❌ 共有ファイル削除失敗: ${entry.fileGoogleDriveId}", e)
+        if (skipDriveDeletion) {
+            expired.forEach { dao.deleteById(it.id) }
+        } else {
+            try {
+                val driveService = DriveServiceHelper.getDriveService(context)
+                expired.forEach { entry ->
+                    try {
+                        Log.d(
+                            "FileDeleter",
+                            "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}"
+                        )
+                        driveService.files().delete(entry.fileGoogleDriveId).execute()
+                        dao.deleteById(entry.id)
+                        Log.d("FileDeleter", "✅ 共有ファイル削除成功: ${entry.fileGoogleDriveId}")
+                    } catch (e: Exception) {
+                        Log.e("FileDeleter", "❌ 共有ファイル削除失敗: ${entry.fileGoogleDriveId}", e)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("FileDeleter", "Google Drive接続エラー（送信側）", e)
             }
-        } catch (e: Exception) {
-            Log.e("FileDeleter", "Google Drive接続エラー（送信側）", e)
         }
     }
 }
