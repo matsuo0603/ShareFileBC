@@ -18,6 +18,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import org.threeten.bp.LocalDateTime
 import org.threeten.bp.format.DateTimeFormatter
+import com.example.sharefilebc.data.FolderStructure
+
 
 @Composable
 fun DownloadScreen(initialFolderId: String?) {

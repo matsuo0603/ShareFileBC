@@ -11,26 +11,14 @@ import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
-import com.google.api.services.drive.model.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.sharefilebc.data.DriveFileInfo
+import com.example.sharefilebc.data.FolderStructure
 
-data class DriveFileInfo(
-    val id: String,
-    val name: String,
-    val mimeType: String?,
-    val isFolder: Boolean
-)
-
-data class FolderStructure(
-    val folderName: String,  // 日付フォルダ名
-    val senderName: String,  // 送信者名（親フォルダから推測）
-    val uploadDate: String,  // フォルダの作成日時（JST）
-    val files: List<DriveFileInfo>
-)
 
 class DriveDownloader(private val context: Context) {
 
