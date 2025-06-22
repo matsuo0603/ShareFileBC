@@ -14,6 +14,7 @@ import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File
+import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.Permission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -26,7 +27,7 @@ class DriveUploader(private val context: Context) {
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
-            context, listOf("https://www.googleapis.com/auth/drive.file")
+            context, listOf(DriveScopes.DRIVE)
         ).apply {
             selectedAccount = account.account
         }

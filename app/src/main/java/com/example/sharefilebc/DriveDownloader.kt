@@ -24,7 +24,7 @@ class DriveDownloader(private val context: Context) {
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
-            context, listOf(DriveScopes.DRIVE_FILE)
+            context, listOf(DriveScopes.DRIVE)
         ).apply {
             selectedAccount = account.account
         }

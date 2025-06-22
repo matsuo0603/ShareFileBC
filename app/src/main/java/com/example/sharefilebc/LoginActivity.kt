@@ -44,7 +44,7 @@ class LoginActivity : ComponentActivity() {
 
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope(DriveScopes.DRIVE_FILE))
+            .requestScopes(Scope(DriveScopes.DRIVE))
             .build()
 
         googleSignInClient = GoogleSignIn.getClient(this, gso)
