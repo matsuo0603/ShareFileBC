@@ -4,12 +4,13 @@ data class DriveFileInfo(
     val id: String,
     val name: String,
     val mimeType: String?,
-    val isFolder: Boolean
+    val isFolder: Boolean,
+    val senderName: String,
+    val uploadDateTime: String,
+    val deleteDateTime: String
 )
 
 data class FolderStructure(
-    val folderName: String,  // 日付フォルダ名
-    val senderName: String,  // 送信者名（親フォルダから推測）
-    val uploadDate: String,  // フォルダの作成日時（JST）
+    val folderName: String, // yyyy-MM-dd などでグループ化
     val files: List<DriveFileInfo>
 )

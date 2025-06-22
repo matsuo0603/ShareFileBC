@@ -5,6 +5,8 @@ import android.media.MediaScannerConnection
 import android.os.Environment
 import android.util.Log
 import android.widget.Toast
+import com.example.sharefilebc.data.DriveFileInfo
+import com.example.sharefilebc.data.FolderStructure
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -16,9 +18,6 @@ import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
-import com.example.sharefilebc.data.DriveFileInfo
-import com.example.sharefilebc.data.FolderStructure
-
 
 class DriveDownloader(private val context: Context) {
 
@@ -43,72 +42,51 @@ class DriveDownloader(private val context: Context) {
                 val driveService = getDriveService() ?: return@withContext null
 
                 val folderInfo = driveService.files().get(folderId)
-                    .setFields("id, name, parents, createdTime")
+                    .setFields("id, name, parents")
                     .execute()
 
-                val senderName = if (folderInfo.parents != null && folderInfo.parents.isNotEmpty()) {
-                    try {
-                        val parentFolder = driveService.files().get(folderInfo.parents[0])
-                            .setFields("name")
-                            .execute()
-                        parentFolder.name ?: "Unknown Sender"
-                    } catch (e: Exception) {
-                        "Unknown Sender"
-                    }
-                } else {
-                    "Unknown Sender"
+                val parentFolderId = folderInfo.parents?.firstOrNull()
+                val parentFolderName = parentFolderId?.let {
+                    driveService.files().get(it).setFields("name").execute().name
+                } ?: "Unknown Sender"
+
+                val fileList = driveService.files().list()
+                    .setQ("'$folderId' in parents and trashed = false")
+                    .setFields("files(id, name, mimeType, createdTime)")
+                    .execute()
+
+                val jst = TimeZone.getTimeZone("Asia/Tokyo")
+                val fullFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply {
+                    timeZone = jst
+                }
+                val dateOnlyFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply {
+                    timeZone = jst
                 }
 
-                val filesResult = driveService.files().list()
-                    .setQ("'$folderId' in parents and trashed = false")
-                    .setFields("files(id, name, mimeType)")
-                    .execute()
+                val files = fileList.files?.map { file ->
+                    val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
+                    val uploadDate = Date(uploadMillis)
+                    val uploadStr = fullFormatter.format(uploadDate)
+                    val deleteStr = fullFormatter.format(Date(uploadMillis + 15 * 60 * 1000))
 
-                val files = filesResult.files?.map { file ->
                     DriveFileInfo(
                         id = file.id,
                         name = file.name,
                         mimeType = file.mimeType,
-                        isFolder = file.mimeType == "application/vnd.google-apps.folder"
+                        isFolder = file.mimeType == "application/vnd.google-apps.folder",
+                        senderName = parentFolderName,
+                        uploadDateTime = uploadStr,
+                        deleteDateTime = deleteStr
                     )
                 } ?: emptyList()
 
-                // ✅ JST時間を正しく取得・変換
-                val uploadDate = folderInfo.createdTime?.let { created ->
-                    try {
-                        // Google Drive APIから取得した時間はUTC
-                        val utcMillis = created.value
-
-                        // JSTのCalendarインスタンスを作成
-                        val jstCalendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
-                        jstCalendar.timeInMillis = utcMillis
-
-                        // JST時間でフォーマット
-                        val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-                        jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
-                        val formatted = jstFormatter.format(jstCalendar.time)
-
-                        Log.d("DriveDownloader", "📅 UTC millis: $utcMillis")
-                        Log.d("DriveDownloader", "📅 JST uploadDate: $formatted")
-                        formatted
-                    } catch (e: Exception) {
-                        Log.e("DriveDownloader", "時間変換エラー", e)
-                        // エラー時は現在のJST時間を使用
-                        val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-                        jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
-                        jstFormatter.format(Date())
-                    }
-                } ?: run {
-                    // createdTimeがnullの場合は現在のJST時間を使用
-                    val jstFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-                    jstFormatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
-                    jstFormatter.format(Date())
-                }
+                val folderName = files.firstOrNull()?.let {
+                    val uploadDate = fullFormatter.parse(it.uploadDateTime)
+                    dateOnlyFormatter.format(uploadDate!!)
+                } ?: "Unknown Date"
 
                 FolderStructure(
-                    folderName = folderInfo.name ?: "Unknown Date",
-                    senderName = senderName,
-                    uploadDate = uploadDate,
+                    folderName = folderName,
                     files = files
                 )
             } catch (e: Exception) {
@@ -124,35 +102,17 @@ class DriveDownloader(private val context: Context) {
     suspend fun downloadFile(fileId: String): java.io.File? {
         return withContext(Dispatchers.IO) {
             try {
-                Log.d("DriveDownloader", "📥 ダウンロード開始: $fileId")
-
-                val driveService = getDriveService() ?: run {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Google Driveサービスに接続できません。", Toast.LENGTH_LONG).show()
-                    }
-                    return@withContext null
-                }
-
+                val driveService = getDriveService() ?: return@withContext null
                 val fileMetadata = driveService.files().get(fileId).execute()
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val outputFile = java.io.File(downloadsDir, fileMetadata.name)
-
-                FileOutputStream(outputFile).use { outputStream ->
-                    driveService.files().get(fileId).executeMediaAndDownloadTo(outputStream)
+                FileOutputStream(outputFile).use {
+                    driveService.files().get(fileId).executeMediaAndDownloadTo(it)
                 }
-
-                MediaScannerConnection.scanFile(
-                    context,
-                    arrayOf(outputFile.absolutePath),
-                    null,
-                    null
-                )
-
-                Log.d("DriveDownloader", "✅ ダウンロード完了: ${outputFile.absolutePath}")
+                MediaScannerConnection.scanFile(context, arrayOf(outputFile.absolutePath), null, null)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "${fileMetadata.name} をダウンロードしました。", Toast.LENGTH_LONG).show()
                 }
-
                 outputFile
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "❌ ダウンロードエラー", e)
