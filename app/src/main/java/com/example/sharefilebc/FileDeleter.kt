@@ -3,12 +3,10 @@ package com.example.sharefilebc
 import android.content.Context
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
-import com.example.sharefilebc.data.ReceivedFolderEntity
-import com.example.sharefilebc.data.SharedFolderEntity
 import com.example.sharefilebc.data.DriveServiceHelper
 import kotlinx.coroutines.runBlocking
-import org.threeten.bp.LocalDateTime
-import org.threeten.bp.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.*
 
 object FileDeleter {
     fun deleteExpiredFiles(context: Context) = runBlocking {
@@ -25,17 +23,60 @@ object FileDeleter {
         Log.d("FileDeleter", "🧹 削除処理終了")
     }
 
+    // ✅ JST時間で現在時刻を取得する関数
+    private fun getCurrentJSTTime(): Date {
+        val jstTimeZone = TimeZone.getTimeZone("Asia/Tokyo")
+        val jstCalendar = Calendar.getInstance(jstTimeZone)
+        return jstCalendar.time
+    }
+
+    // ✅ JST時間で日付文字列をパースする関数
+    private fun parseJSTDateTime(dateTimeString: String): Date? {
+        return try {
+            val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+            formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+            formatter.parse(dateTimeString)
+        } catch (e: Exception) {
+            Log.e("FileDeleter", "日付解析エラー: $dateTimeString", e)
+            null
+        }
+    }
+
+    // ✅ 削除時間を計算する関数（JST基準）
+    private fun calculateDeleteTime(uploadDate: Date): Date {
+        val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
+        calendar.time = uploadDate
+        calendar.add(Calendar.MINUTE, 15) // 15分後
+        return calendar.time
+    }
+
+    // ✅ デバッグ用：JST時間を文字列で表示
+    private fun formatJSTTime(date: Date): String {
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+        return formatter.format(date)
+    }
+
     private suspend fun deleteExpiredReceivedFiles(context: Context, dao: com.example.sharefilebc.data.ReceivedFolderDao) {
         val allFolders = dao.getAllOnce()
-        val now = LocalDateTime.now()
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        val currentJSTTime = getCurrentJSTTime()
 
+        Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
+
+        // ✅ uploadDate（アップロード日時）を基準に削除判定
         val expired = allFolders.filter { entry ->
-            try {
-                val entryDate = LocalDateTime.parse(entry.receivedDate, formatter)
-                entryDate.isBefore(now.minusMinutes(15)) // ✅ 15分に変更
-            } catch (e: Exception) {
-                Log.e("FileDeleter", "日付解析エラー: ${entry.receivedDate}", e)
+            val uploadDate = parseJSTDateTime(entry.uploadDate)
+            if (uploadDate != null) {
+                val deleteTime = calculateDeleteTime(uploadDate)
+                val isExpired = currentJSTTime.after(deleteTime)
+
+                Log.d("FileDeleter", "📂 ${entry.folderName}:")
+                Log.d("FileDeleter", "  アップロード時刻: ${formatJSTTime(uploadDate)}")
+                Log.d("FileDeleter", "  削除予定時刻: ${formatJSTTime(deleteTime)}")
+                Log.d("FileDeleter", "  削除対象: $isExpired")
+
+                isExpired
+            } else {
                 false
             }
         }
@@ -46,7 +87,7 @@ object FileDeleter {
             val driveService = DriveServiceHelper.getDriveService(context)
             expired.forEach { entry ->
                 try {
-                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId})")
+                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDate}")
                     driveService.files().delete(entry.folderId).execute()
                     dao.deleteById(entry.id)
                     Log.d("FileDeleter", "✅ 受信フォルダ削除成功: ${entry.folderId}")
@@ -60,16 +101,25 @@ object FileDeleter {
     }
 
     private suspend fun deleteExpiredSharedFiles(context: Context, dao: com.example.sharefilebc.data.SharedFolderDao) {
-        val allSharedFiles = dao.getAllOnce() // ✅ 新しいメソッドが必要
-        val now = LocalDateTime.now()
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        val allSharedFiles = dao.getAllOnce()
+        val currentJSTTime = getCurrentJSTTime()
 
+        Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
+
+        // ✅ date（アップロード日時）を基準に削除判定
         val expired = allSharedFiles.filter { entry ->
-            try {
-                val entryDate = LocalDateTime.parse(entry.date, formatter)
-                entryDate.isBefore(now.minusMinutes(15)) // ✅ 15分に変更
-            } catch (e: Exception) {
-                Log.e("FileDeleter", "日付解析エラー: ${entry.date}", e)
+            val uploadDate = parseJSTDateTime(entry.date)
+            if (uploadDate != null) {
+                val deleteTime = calculateDeleteTime(uploadDate)
+                val isExpired = currentJSTTime.after(deleteTime)
+
+                Log.d("FileDeleter", "📄 ${entry.fileName}:")
+                Log.d("FileDeleter", "  アップロード時刻: ${formatJSTTime(uploadDate)}")
+                Log.d("FileDeleter", "  削除予定時刻: ${formatJSTTime(deleteTime)}")
+                Log.d("FileDeleter", "  削除対象: $isExpired")
+
+                isExpired
+            } else {
                 false
             }
         }
@@ -80,11 +130,11 @@ object FileDeleter {
             val driveService = DriveServiceHelper.getDriveService(context)
             expired.forEach { entry ->
                 try {
-                    Log.d("FileDeleter", "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId})")
+                    Log.d("FileDeleter", "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}")
                     // ✅ ファイル自体を削除
                     driveService.files().delete(entry.fileGoogleDriveId).execute()
                     // ✅ DBからも削除
-                    dao.deleteById(entry.id) // ✅ 新しいメソッドが必要
+                    dao.deleteById(entry.id)
                     Log.d("FileDeleter", "✅ 共有ファイル削除成功: ${entry.fileGoogleDriveId}")
                 } catch (e: Exception) {
                     Log.e("FileDeleter", "❌ 共有ファイル削除失敗: ${entry.fileGoogleDriveId}", e)

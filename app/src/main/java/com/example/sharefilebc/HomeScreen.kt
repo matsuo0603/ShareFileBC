@@ -1,3 +1,5 @@
+// ファイルパス: com.example.sharefilebc.ui.HomeScreen.kt
+
 package com.example.sharefilebc.ui
 
 import android.net.Uri
@@ -45,7 +47,12 @@ fun HomeScreen(
                 selectedUser?.let { user ->
                     coroutineScope.launch {
                         withContext(Dispatchers.IO) {
-                            val result: Triple<String, String, String>? = driveUploader.uploadFileAndRecord(fileUri, user.name, db)
+                            val result = driveUploader.uploadFileAndRecordWithSharing(
+                                fileUri = fileUri,
+                                recipientName = user.name,
+                                recipientEmail = user.email,
+                                db = db
+                            )
                             withContext(Dispatchers.Main) {
                                 if (result == null) {
                                     Toast.makeText(context, "アップロードに失敗しました（Google認証を確認）", Toast.LENGTH_LONG).show()
@@ -55,7 +62,6 @@ fun HomeScreen(
                                     EmailSender.sendEmailWithDriveLink(context, user.email, fileName, folderId)
                                 }
                             }
-
                         }
                     }
                 }
