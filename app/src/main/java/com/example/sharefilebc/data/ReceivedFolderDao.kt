@@ -33,8 +33,4 @@ interface ReceivedFolderDao {
 
     @Query("DELETE FROM received_folders WHERE id = :id")
     fun deleteById(id: Int)
-
-    @Query("DELETE FROM received_folders WHERE folderId = :folderId")
-    suspend fun deleteByFolderId(folderId: String)
-
 }

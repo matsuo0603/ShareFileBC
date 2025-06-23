@@ -27,8 +27,6 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.tasks.Task
 import androidx.compose.ui.ExperimentalComposeUiApi
 import android.util.Log
-import com.google.android.gms.common.api.Scope
-import com.google.api.services.drive.DriveScopes
 
 class LoginActivity : ComponentActivity() {
 
@@ -44,7 +42,6 @@ class LoginActivity : ComponentActivity() {
 
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope(DriveScopes.DRIVE))
             .build()
 
         googleSignInClient = GoogleSignIn.getClient(this, gso)
