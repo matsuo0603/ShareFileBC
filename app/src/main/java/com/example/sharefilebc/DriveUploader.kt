@@ -1,5 +1,3 @@
-// ファイルパス: com.example.sharefilebc.DriveUploader.kt
-
 package com.example.sharefilebc
 
 import android.content.Context
@@ -79,13 +77,23 @@ class DriveUploader(private val context: Context) {
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // 👇 共有権限を追加
-                val permission = Permission().apply {
+                // 👇 ファイルに共有権限を付与
+                val filePermission = Permission().apply {
                     type = "user"
                     role = "reader"
                     emailAddress = recipientEmail
                 }
-                driveService.permissions().create(uploadedFile.id, permission)
+                driveService.permissions().create(uploadedFile.id, filePermission)
+                    .setSendNotificationEmail(false)
+                    .execute()
+
+                // ✅ フォルダにも共有権限を付与（重要）
+                val folderPermission = Permission().apply {
+                    type = "user"
+                    role = "reader"
+                    emailAddress = recipientEmail
+                }
+                driveService.permissions().create(dateFolderId, folderPermission)
                     .setSendNotificationEmail(false)
                     .execute()
 
