@@ -12,12 +12,12 @@ import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File
-import kotlinx.coroutines.CoroutineScope
+import com.google.api.services.drive.DriveScopes
+import com.google.api.services.drive.model.Permission
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.text.SimpleDateFormat
 import java.util.*
 
 class DriveUploader(private val context: Context) {
@@ -25,7 +25,7 @@ class DriveUploader(private val context: Context) {
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
-            context, listOf("https://www.googleapis.com/auth/drive.file")
+            context, listOf(DriveScopes.DRIVE)
         ).apply {
             selectedAccount = account.account
         }
@@ -37,137 +37,102 @@ class DriveUploader(private val context: Context) {
         ).setApplicationName("ShareFileBC").build()
     }
 
-    // フォルダID、ファイルID、ファイル名をまとめて返すように変更
-    suspend fun uploadFileAndRecord(fileUri: Uri, recipientName: String, db: AppDatabase): Triple<String, String, String>? {
+    suspend fun uploadFileAndRecordWithSharing(
+        fileUri: Uri,
+        recipientName: String,
+        recipientEmail: String,
+        db: AppDatabase
+    ): Triple<String, String, String>? {
         return withContext(Dispatchers.IO) {
             try {
                 val driveService = getDriveService() ?: return@withContext null
 
-                // Get file name from Uri
                 val fileName = context.contentResolver.query(fileUri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     cursor.moveToFirst()
                     cursor.getString(nameIndex)
                 } ?: "Unknown File"
 
-                // Read file bytes from Uri
                 val inputStream: InputStream? = context.contentResolver.openInputStream(fileUri)
                 val fileBytes = inputStream?.readBytes() ?: return@withContext null
 
-                // Create a new folder for the recipient if it doesn't exist under ShareFileBCApp
-                // まず ShareFileBCApp ルートフォルダのIDを取得または作成
-                var shareFileBcAppFolderId: String? = null
-                val existingAppFolders = driveService.files().list()
-                    .setQ("mimeType='application/vnd.google-apps.folder' and name='ShareFileBCApp' and 'root' in parents and trashed=false")
-                    .setFields("files(id)")
-                    .execute()
+                val appFolderId = getOrCreateFolder(driveService, "ShareFileBCApp", "root")
+                val recipientFolderId = getOrCreateFolder(driveService, recipientName, appFolderId)
 
-                if (existingAppFolders.files.isNotEmpty()) {
-                    shareFileBcAppFolderId = existingAppFolders.files[0].id
-                } else {
-                    val appFolderMetadata = File().apply {
-                        name = "ShareFileBCApp"
-                        mimeType = "application/vnd.google-apps.folder"
-                        parents = listOf("root") // ルート直下に作成
-                    }
-                    val createdAppFolder = driveService.files().create(appFolderMetadata)
-                        .setFields("id")
-                        .execute()
-                    shareFileBcAppFolderId = createdAppFolder.id
-                }
+                val jst = TimeZone.getTimeZone("Asia/Tokyo")
+                val dateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = jst }
+                val dateTimeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply { timeZone = jst }
+                val now = Calendar.getInstance(jst).time
+                val currentDate = dateFormatter.format(now)
+                val currentDateTime = dateTimeFormatter.format(now)
 
-                if (shareFileBcAppFolderId == null) {
-                    Log.e("DriveUploader", "Failed to create or find ShareFileBCApp folder.")
-                    return@withContext null
-                }
+                val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
 
-                // 次に、受信者ごとのフォルダを ShareFileBCApp の下に作成または取得
-                var recipientFolderId: String? = null
-                val existingRecipientFolders = driveService.files().list()
-                    .setQ("mimeType='application/vnd.google-apps.folder' and name='$recipientName' and '$shareFileBcAppFolderId' in parents and trashed=false")
-                    .setFields("files(id)")
-                    .execute()
-
-                if (existingRecipientFolders.files.isNotEmpty()) {
-                    recipientFolderId = existingRecipientFolders.files[0].id
-                } else {
-                    val recipientFolderMetadata = File().apply {
-                        name = recipientName
-                        mimeType = "application/vnd.google-apps.folder"
-                        parents = listOf(shareFileBcAppFolderId)
-                    }
-                    val createdRecipientFolder = driveService.files().create(recipientFolderMetadata)
-                        .setFields("id")
-                        .execute()
-                    recipientFolderId = createdRecipientFolder.id
-                }
-
-                if (recipientFolderId == null) {
-                    Log.e("DriveUploader", "Failed to create or find folder for $recipientName")
-                    return@withContext null
-                }
-
-                // ✅ 日付フォルダを作成または取得（yyyy-MM-dd形式に変更）
-                val currentDateOnly = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                val currentDateTimeForRecord = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-
-                var dateFolderId: String? = null
-                val existingDateFolders = driveService.files().list()
-                    .setQ("mimeType='application/vnd.google-apps.folder' and name='$currentDateOnly' and '$recipientFolderId' in parents and trashed=false")
-                    .setFields("files(id)")
-                    .execute()
-
-                if (existingDateFolders.files.isNotEmpty()) {
-                    dateFolderId = existingDateFolders.files[0].id
-                } else {
-                    val dateFolderMetadata = File().apply {
-                        name = currentDateOnly // yyyy-MM-dd形式
-                        mimeType = "application/vnd.google-apps.folder"
-                        parents = listOf(recipientFolderId)
-                    }
-                    val createdDateFolder = driveService.files().create(dateFolderMetadata)
-                        .setFields("id")
-                        .execute()
-                    dateFolderId = createdDateFolder.id
-                }
-
-                if (dateFolderId == null) {
-                    Log.e("DriveUploader", "Failed to create or find date folder for $currentDateOnly")
-                    return@withContext null
-                }
-
-                // Upload the file to the determined date folder
                 val fileMetadata = File().apply {
                     name = fileName
-                    parents = listOf(dateFolderId) // 日付フォルダを親にする
+                    parents = listOf(dateFolderId)
                 }
-
                 val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", fileBytes)
                 val uploadedFile = driveService.files().create(fileMetadata, fileContent)
-                    .setFields("id, name, webViewLink") // Request webViewLink
+                    .setFields("id, name, webViewLink")
                     .execute()
 
-                val fileId = uploadedFile.id // Google Drive上のファイルID
-                val webViewLink = uploadedFile.webViewLink // Get the webViewLink
+                // 👇 ファイルに共有権限を付与
+                val filePermission = Permission().apply {
+                    type = "user"
+                    role = "reader"
+                    emailAddress = recipientEmail
+                }
+                driveService.permissions().create(uploadedFile.id, filePermission)
+                    .setSendNotificationEmail(false)
+                    .execute()
 
-                // ✅ Record in Room database - 削除判定用に分単位の時刻で記録
-                val dao = db.sharedFolderDao()
-                dao.insert(
+                // ✅ フォルダにも共有権限を付与（重要）
+                val folderPermission = Permission().apply {
+                    type = "user"
+                    role = "reader"
+                    emailAddress = recipientEmail
+                }
+                driveService.permissions().create(dateFolderId, folderPermission)
+                    .setSendNotificationEmail(false)
+                    .execute()
+
+                db.sharedFolderDao().insert(
                     SharedFolderEntity(
-                        date = currentDateTimeForRecord, // 削除判定用に分単位で記録
+                        date = currentDateTime,
                         recipientName = recipientName,
-                        folderId = dateFolderId, // 保存された日付フォルダのID
-                        fileName = fileName, // ファイル名も保存
-                        fileGoogleDriveId = fileId // ファイルのGoogle Drive IDも保存
+                        folderId = dateFolderId,
+                        fileName = fileName,
+                        fileGoogleDriveId = uploadedFile.id
                     )
                 )
-                Log.d("DriveUploader", "Uploaded File ID: $fileId, Folder ID: $dateFolderId, Web View Link: $webViewLink, FileName: $fileName")
 
-                return@withContext Triple(fileName, fileId, dateFolderId) // Return fileName, fileId, and folderId
+                return@withContext Triple(fileName, uploadedFile.id, dateFolderId)
             } catch (e: Exception) {
-                Log.e("DriveUploader", "Error uploading file and recording", e)
+                Log.e("DriveUploader", "Upload error", e)
                 return@withContext null
             }
+        }
+    }
+
+    private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {
+        val existing = drive.files().list()
+            .setQ("mimeType='application/vnd.google-apps.folder' and name='$name' and '$parentId' in parents and trashed=false")
+            .setFields("files(id)")
+            .execute()
+
+        return if (existing.files.isNotEmpty()) {
+            existing.files[0].id
+        } else {
+            val metadata = File().apply {
+                this.name = name
+                mimeType = "application/vnd.google-apps.folder"
+                parents = listOf(parentId)
+            }
+            val created = drive.files().create(metadata)
+                .setFields("id")
+                .execute()
+            created.id
         }
     }
 }
