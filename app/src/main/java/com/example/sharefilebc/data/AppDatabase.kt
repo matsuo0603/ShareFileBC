@@ -5,10 +5,8 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-// バージョンを5に設定します (ReceivedFolderEntity にuploadDateフィールド追加のため)
-@Database(entities = [UserEntity::class, SharedFolderEntity::class, ReceivedFolderEntity::class], version = 5)
+@Database(entities = [UserEntity::class, SharedFolderEntity::class, ReceivedFolderEntity::class], version = 7)
 abstract class AppDatabase : RoomDatabase() {
-    // 抽象メソッドとして、各DAOへのアクセスを提供する
     abstract fun userDao(): UserDao
     abstract fun sharedFolderDao(): SharedFolderDao
     abstract fun receivedFolderDao(): ReceivedFolderDao
@@ -22,7 +20,7 @@ abstract class AppDatabase : RoomDatabase() {
                 Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "app_database" // データベースファイル名
+                    "app_database"
                 ).fallbackToDestructiveMigration(true)
                     .build()
                     .also { INSTANCE = it }

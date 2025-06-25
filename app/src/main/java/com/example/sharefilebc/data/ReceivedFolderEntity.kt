@@ -6,10 +6,10 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "received_folders")
 data class ReceivedFolderEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val folderId: String,          // Google DriveのフォルダID
-    val folderName: String,        // フォルダ名（日付など）
-    val senderName: String,        // 送信者名（フォルダ構造から推測）
-    val receivedDate: String,      // 受信日時（リンクを開いた時刻）
-    val lastAccessDate: String,    // 最後にアクセスした日時
-    val uploadDate: String         // ✅ 追加：ファイルがアップロードされた日時（削除判定の基準）
+
+    val folderId: String,            // Google Drive上のフォルダID
+    val folderName: String,          // UI表示用のフォルダ名（例: 2025-06-25）
+    val senderName: String,          // 誰から共有されたか（送信者名）
+    val uploadDateTime: String,      // アップロードされた時刻（DateTime単位）
+    val deleteDateTime: String       // 削除予定時刻（この時刻を過ぎたら自動削除）
 )
