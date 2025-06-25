@@ -22,7 +22,9 @@ fun FileListScreen(folderStructure: FolderStructure) {
     if (folderStructure.files.isEmpty()) {
         Text("このフォルダにはファイルがありません。")
     } else {
-        LazyColumn {
+        LazyColumn(
+            contentPadding = PaddingValues(bottom = 80.dp)
+        ) {
             items(folderStructure.files.filter { !it.isFolder }) { file ->
                 Card(
                     modifier = Modifier

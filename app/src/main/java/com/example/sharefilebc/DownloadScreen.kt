@@ -91,7 +91,9 @@ fun DownloadScreen(initialFolderId: String?) {
                     } else {
                         val groupedByDate = receivedFolders.groupBy { it.folderName }
 
-                        LazyColumn {
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 80.dp)
+                        ) {
                             items(groupedByDate.entries.toList()) { (date, folders) ->
                                 Card(
                                     modifier = Modifier
