@@ -25,7 +25,11 @@ fun FileListScreen(folderStructure: FolderStructure) {
         LazyColumn(
             contentPadding = PaddingValues(bottom = 80.dp)
         ) {
-            items(folderStructure.files.filter { !it.isFolder }) { file ->
+            items(
+                folderStructure.files
+                    .filter { !it.isFolder }
+                    .sortedBy { it.deleteDateTime } // ← ここで削除予定時刻順にソート
+            ) { file ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
