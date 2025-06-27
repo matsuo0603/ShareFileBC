@@ -46,7 +46,7 @@ object FileDeleter {
     private fun calculateDeleteTime(uploadDate: Date): Date {
         val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
         calendar.time = uploadDate
-        calendar.add(Calendar.MINUTE, 15) // 15分後
+        calendar.add(Calendar.MINUTE, 10) // 15分後
         return calendar.time
     }
 
@@ -65,7 +65,7 @@ object FileDeleter {
 
         // ✅ uploadDate（アップロード日時）を基準に削除判定
         val expired = allFolders.filter { entry ->
-            val uploadDate = parseJSTDateTime(entry.uploadDate)
+            val uploadDate = parseJSTDateTime(entry.uploadDateTime)
             if (uploadDate != null) {
                 val deleteTime = calculateDeleteTime(uploadDate)
                 val isExpired = currentJSTTime.after(deleteTime)
@@ -87,7 +87,7 @@ object FileDeleter {
             val driveService = DriveServiceHelper.getDriveService(context)
             expired.forEach { entry ->
                 try {
-                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDate}")
+                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDateTime}")
                     driveService.files().delete(entry.folderId).execute()
                     dao.deleteById(entry.id)
                     Log.d("FileDeleter", "✅ 受信フォルダ削除成功: ${entry.folderId}")

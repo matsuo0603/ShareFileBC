@@ -10,12 +10,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
-import com.example.sharefilebc.data.ReceivedFolderEntity
 import com.example.sharefilebc.data.FolderStructure
+import com.example.sharefilebc.data.ReceivedFolderEntity
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
 
 @Composable
 fun DownloadScreen(initialFolderId: String?) {
@@ -24,80 +22,56 @@ fun DownloadScreen(initialFolderId: String?) {
     val coroutineScope = rememberCoroutineScope()
 
     var selectedDate by remember { mutableStateOf<String?>(null) }
-    var receivedFolders by remember { mutableStateOf<List<ReceivedFolderEntity>>(emptyList()) }
     var currentFolderStructure by remember { mutableStateOf<FolderStructure?>(null) }
+    var receivedFolders by remember { mutableStateOf<List<ReceivedFolderEntity>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
 
     val db = remember { AppDatabase.getDatabase(context) }
-    val receivedFolderDao = db.receivedFolderDao()
-
-    fun getCurrentJSTTime(): String {
-        val jstTimeZone = TimeZone.getTimeZone("Asia/Tokyo")
-        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-        formatter.timeZone = jstTimeZone
-        return formatter.format(Date())
-    }
+    val dao = db.receivedFolderDao()
 
     LaunchedEffect(initialFolderId) {
         if (initialFolderId != null) {
             isLoading = true
             val folderStructure = downloader.getFolderStructure(initialFolderId)
-            if (folderStructure != null) {
-                if (folderStructure.files.none { !it.isFolder }) {
-                    receivedFolderDao.deleteByFolderId(initialFolderId)
-                    isLoading = false
-                    return@LaunchedEffect
-                }
-
+            if (folderStructure != null && folderStructure.files.any { !it.isFolder }) {
+                selectedDate = folderStructure.folderName
                 currentFolderStructure = folderStructure
 
-                val existingFolder = receivedFolderDao.findByFolderId(initialFolderId)
-                val currentDate = getCurrentJSTTime()
-
-                if (existingFolder != null) {
-                    receivedFolderDao.updateLastAccessDate(initialFolderId, currentDate)
-                } else {
-                    val newFolder = ReceivedFolderEntity(
-                        folderId = initialFolderId,
-                        folderName = folderStructure.folderName,
-                        senderName = "不明",
-                        uploadDate = currentDate,
-                        receivedDate = currentDate,
-                        lastAccessDate = currentDate
+                val existing = dao.findByFolderId(initialFolderId)
+                if (existing == null) {
+                    val file = folderStructure.files.firstOrNull()
+                    dao.insert(
+                        ReceivedFolderEntity(
+                            folderId = initialFolderId,
+                            folderName = folderStructure.folderName,
+                            senderName = file?.senderName ?: "不明",
+                            uploadDateTime = file?.uploadDateTime ?: "",
+                            deleteDateTime = file?.deleteDateTime ?: ""
+                        )
                     )
-                    receivedFolderDao.insert(newFolder)
                 }
-
-                selectedDate = folderStructure.folderName
             }
             isLoading = false
         }
     }
 
     LaunchedEffect(Unit) {
-        receivedFolderDao.getAll().collectLatest { folders ->
-            receivedFolders = folders
-        }
+        dao.getAll().collectLatest { receivedFolders = it }
     }
 
     Scaffold { innerPadding ->
         Column(
             modifier = Modifier
-                .fillMaxSize()
                 .padding(innerPadding)
+                .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             if (isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = androidx.compose.ui.Alignment.Center
-                ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else {
-                val folderStructure = currentFolderStructure
-
-                if (selectedDate != null && folderStructure != null) {
+                if (selectedDate != null && currentFolderStructure != null) {
                     Button(
                         onClick = {
                             selectedDate = null
@@ -108,43 +82,7 @@ fun DownloadScreen(initialFolderId: String?) {
                         Text("← フォルダ一覧に戻る")
                     }
 
-                    Text("📁 ${folderStructure.folderName}", style = MaterialTheme.typography.titleLarge)
-
-                    if (folderStructure.files.isEmpty()) {
-                        Text("このフォルダにはファイルがありません。")
-                    } else {
-                        LazyColumn {
-                            items(folderStructure.files.filter { !it.isFolder }) { file ->
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp)) {
-                                        Text("📄 ${file.name}", style = MaterialTheme.typography.titleMedium)
-                                        Text("👤 ${file.senderName}", style = MaterialTheme.typography.bodyMedium)
-                                        Text("⏱ ${file.uploadDateTime}", style = MaterialTheme.typography.bodySmall)
-                                        Text(
-                                            "🗑 ${file.deleteDateTime} に削除予定",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.error
-                                        )
-                                        Button(
-                                            onClick = {
-                                                coroutineScope.launch {
-                                                    downloader.downloadFile(file.id)
-                                                }
-                                            },
-                                            modifier = Modifier.padding(top = 8.dp)
-                                        ) {
-                                            Text("ダウンロード")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    FileListScreen(currentFolderStructure!!)
                 } else {
                     Text("受信したフォルダ一覧", style = MaterialTheme.typography.titleLarge)
 
@@ -153,7 +91,9 @@ fun DownloadScreen(initialFolderId: String?) {
                     } else {
                         val groupedByDate = receivedFolders.groupBy { it.folderName }
 
-                        LazyColumn {
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 80.dp)
+                        ) {
                             items(groupedByDate.entries.toList()) { (date, folders) ->
                                 Card(
                                     modifier = Modifier
@@ -174,7 +114,7 @@ fun DownloadScreen(initialFolderId: String?) {
                                                 isLoading = false
                                             }
                                         },
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
                                         Text("📁 $date", style = MaterialTheme.typography.titleMedium)
