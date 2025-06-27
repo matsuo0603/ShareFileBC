@@ -1,6 +1,4 @@
-// ファイルパス: com.example.sharefilebc.ui.HomeScreen.kt
-
-package com.example.sharefilebc.ui
+package com.example.sharefilebc
 
 import android.net.Uri
 import android.util.Log
@@ -14,8 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.sharefilebc.DriveUploader
-import com.example.sharefilebc.EmailSender
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +35,7 @@ fun HomeScreen(
     var email by remember { mutableStateOf("") }
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
+    var isUploading by remember { mutableStateOf(false) }
 
     val openFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -46,6 +43,7 @@ fun HomeScreen(
             uri?.let { fileUri ->
                 selectedUser?.let { user ->
                     coroutineScope.launch {
+                        isUploading = true
                         withContext(Dispatchers.IO) {
                             val result = driveUploader.uploadFileAndRecordWithSharing(
                                 fileUri = fileUri,
@@ -54,6 +52,7 @@ fun HomeScreen(
                                 db = db
                             )
                             withContext(Dispatchers.Main) {
+                                isUploading = false
                                 if (result == null) {
                                     Toast.makeText(context, "アップロードに失敗しました（Google認証を確認）", Toast.LENGTH_LONG).show()
                                 } else {
@@ -118,8 +117,14 @@ fun HomeScreen(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
+
         Text("共有相手一覧：", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(8.dp))
+
+        if (isUploading) {
+            CircularProgressIndicator()
+            Text("アップロード中... Gmailに遷移します", modifier = Modifier.padding(top = 8.dp))
+        }
 
         users.forEach { user ->
             Row(
@@ -133,7 +138,8 @@ fun HomeScreen(
                         selectedUser = user
                         openFileLauncher.launch("*/*")
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    enabled = !isUploading
                 ) {
                     Text("${user.name}（${user.email}）にアップロード")
                 }
@@ -145,7 +151,8 @@ fun HomeScreen(
                         coroutineScope.launch {
                             userDao.deleteByName(user.name)
                         }
-                    }
+                    },
+                    enabled = !isUploading
                 ) {
                     Text("削除")
                 }
