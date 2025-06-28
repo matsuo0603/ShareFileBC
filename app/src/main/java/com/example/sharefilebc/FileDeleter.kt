@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
+import com.example.sharefilebc.data.ReceivedFolderDao
 import kotlinx.coroutines.runBlocking
 import java.text.SimpleDateFormat
 import java.util.*
@@ -16,21 +17,18 @@ object FileDeleter {
         val receivedFolderDao = db.receivedFolderDao()
         val sharedFolderDao = db.sharedFolderDao()
 
-        // ✅ 受信者側と送信者側の両方を処理
-        deleteExpiredReceivedFiles(context, receivedFolderDao)
+        deleteExpiredReceivedFiles(receivedFolderDao)
         deleteExpiredSharedFiles(context, sharedFolderDao)
 
         Log.d("FileDeleter", "🧹 削除処理終了")
     }
 
-    // ✅ JST時間で現在時刻を取得する関数
     private fun getCurrentJSTTime(): Date {
         val jstTimeZone = TimeZone.getTimeZone("Asia/Tokyo")
         val jstCalendar = Calendar.getInstance(jstTimeZone)
         return jstCalendar.time
     }
 
-    // ✅ JST時間で日付文字列をパースする関数
     private fun parseJSTDateTime(dateTimeString: String): Date? {
         return try {
             val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -42,28 +40,25 @@ object FileDeleter {
         }
     }
 
-    // ✅ 削除時間を計算する関数（JST基準）
     private fun calculateDeleteTime(uploadDate: Date): Date {
         val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
         calendar.time = uploadDate
-        calendar.add(Calendar.MINUTE, 10) // 15分後
+        calendar.add(Calendar.MINUTE, 10) // テスト用: 10分後に削除
         return calendar.time
     }
 
-    // ✅ デバッグ用：JST時間を文字列で表示
     private fun formatJSTTime(date: Date): String {
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
         formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
         return formatter.format(date)
     }
 
-    private suspend fun deleteExpiredReceivedFiles(context: Context, dao: com.example.sharefilebc.data.ReceivedFolderDao) {
+    private suspend fun deleteExpiredReceivedFiles(dao: ReceivedFolderDao) {
         val allFolders = dao.getAllOnce()
         val currentJSTTime = getCurrentJSTTime()
 
         Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
 
-        // ✅ uploadDate（アップロード日時）を基準に削除判定
         val expired = allFolders.filter { entry ->
             val uploadDate = parseJSTDateTime(entry.uploadDateTime)
             if (uploadDate != null) {
@@ -83,20 +78,9 @@ object FileDeleter {
 
         Log.d("FileDeleter", "⏰ 削除対象受信フォルダ数: ${expired.size}")
 
-        try {
-            val driveService = DriveServiceHelper.getDriveService(context)
-            expired.forEach { entry ->
-                try {
-                    Log.d("FileDeleter", "🗂 受信フォルダ削除対象: ${entry.folderName} (${entry.folderId}) - アップロード日時: ${entry.uploadDateTime}")
-                    driveService.files().delete(entry.folderId).execute()
-                    dao.deleteById(entry.id)
-                    Log.d("FileDeleter", "✅ 受信フォルダ削除成功: ${entry.folderId}")
-                } catch (e: Exception) {
-                    Log.e("FileDeleter", "❌ 受信フォルダ削除失敗: ${entry.folderId}", e)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("FileDeleter", "Google Drive接続エラー（受信側）", e)
+        expired.forEach { entry ->
+            Log.d("FileDeleter", "🗂 Roomから受信フォルダ削除: ${entry.folderName} (${entry.folderId})")
+            dao.deleteById(entry.id)
         }
     }
 
@@ -106,7 +90,6 @@ object FileDeleter {
 
         Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
 
-        // ✅ date（アップロード日時）を基準に削除判定
         val expired = allSharedFiles.filter { entry ->
             val uploadDate = parseJSTDateTime(entry.date)
             if (uploadDate != null) {
@@ -128,16 +111,35 @@ object FileDeleter {
 
         try {
             val driveService = DriveServiceHelper.getDriveService(context)
+            val deletedFolderIds = mutableSetOf<String>()
+
             expired.forEach { entry ->
                 try {
                     Log.d("FileDeleter", "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}")
-                    // ✅ ファイル自体を削除
                     driveService.files().delete(entry.fileGoogleDriveId).execute()
-                    // ✅ DBからも削除
                     dao.deleteById(entry.id)
                     Log.d("FileDeleter", "✅ 共有ファイル削除成功: ${entry.fileGoogleDriveId}")
+                    deletedFolderIds.add(entry.folderId)
                 } catch (e: Exception) {
                     Log.e("FileDeleter", "❌ 共有ファイル削除失敗: ${entry.fileGoogleDriveId}", e)
+                }
+            }
+
+            // 📁 空のフォルダを削除
+            for (folderId in deletedFolderIds) {
+                try {
+                    val filesInFolder = driveService.files().list()
+                        .setQ("'$folderId' in parents and trashed = false")
+                        .setFields("files(id)")
+                        .execute()
+                        .files
+
+                    if (filesInFolder.isNullOrEmpty()) {
+                        driveService.files().delete(folderId).execute()
+                        Log.d("FileDeleter", "✅ 空のフォルダ削除成功: $folderId")
+                    }
+                } catch (e: Exception) {
+                    Log.e("FileDeleter", "❌ フォルダ削除失敗: $folderId", e)
                 }
             }
         } catch (e: Exception) {
