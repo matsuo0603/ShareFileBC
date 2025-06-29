@@ -11,8 +11,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.padding
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
-import com.example.sharefilebc.ui.BottomTab
-import com.example.sharefilebc.ui.BottomNavigationBar
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 
@@ -60,6 +58,9 @@ class HomeActivity : ComponentActivity() {
                         }
                         BottomTab.Download -> {
                             DownloadScreen(initialFolderId = folderIdFromLink)
+                        }
+                        BottomTab.Sent -> {
+                            SentFilesScreen(modifier = Modifier.padding(innerPadding))
                         }
                     }
                 }
