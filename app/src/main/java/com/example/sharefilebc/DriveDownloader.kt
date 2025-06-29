@@ -67,7 +67,7 @@ class DriveDownloader(private val context: Context) {
                     val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
                     val uploadDate = Date(uploadMillis)
                     val uploadStr = fullFormatter.format(uploadDate)
-                    val deleteStr = fullFormatter.format(Date(uploadMillis + 15 * 60 * 1000))
+                    val deleteStr = fullFormatter.format(Date(uploadMillis + 10 * 60 * 1000))
 
                     DriveFileInfo(
                         id = file.id,
