@@ -12,7 +12,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.sharefilebc"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 35  // targetSdkも一致させる
         versionCode = 1
         versionName = "1.0"
@@ -78,6 +78,9 @@ dependencies {
     // HomeScreen.ktで使用されている重要なCompose依存関係
     implementation("androidx.activity:activity-compose:1.8.0")
     implementation("androidx.compose.foundation:foundation-layout")
+
+    // ViewModel Compose統合 - 追加
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
     // Google サインイン
     implementation("com.google.android.gms:play-services-auth:20.7.0")
