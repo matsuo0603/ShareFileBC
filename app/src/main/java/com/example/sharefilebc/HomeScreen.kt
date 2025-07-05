@@ -4,7 +4,6 @@ import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,7 +37,7 @@ fun HomeScreen(
     var isUploading by remember { mutableStateOf(false) }
 
     val openFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent(),
+        contract = FilePickerContract(),
         onResult = { uri: Uri? ->
             uri?.let { fileUri ->
                 selectedUser?.let { user ->
@@ -136,7 +135,7 @@ fun HomeScreen(
                 Button(
                     onClick = {
                         selectedUser = user
-                        openFileLauncher.launch("*/*")
+                        openFileLauncher.launch(Unit)
                     },
                     modifier = Modifier.weight(1f),
                     enabled = !isUploading
