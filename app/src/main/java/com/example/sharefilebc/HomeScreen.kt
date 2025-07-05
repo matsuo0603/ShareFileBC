@@ -47,7 +47,6 @@ fun HomeScreen(
                             val result = driveUploader.uploadFileAndRecordWithSharing(
                                 fileUri = fileUri,
                                 recipientName = user.name,
-                                recipientEmail = user.email,
                                 db = db
                             )
                             withContext(Dispatchers.Main) {

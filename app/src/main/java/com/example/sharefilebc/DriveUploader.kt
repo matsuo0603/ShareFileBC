@@ -40,7 +40,6 @@ class DriveUploader(private val context: Context) {
     suspend fun uploadFileAndRecordWithSharing(
         fileUri: Uri,
         recipientName: String,
-        recipientEmail: String,
         db: AppDatabase
     ): Triple<String, String, String>? {
         return withContext(Dispatchers.IO) {
@@ -77,25 +76,23 @@ class DriveUploader(private val context: Context) {
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // 👇 ファイルに共有権限を付与
+                // ファイルに共有権限を付与
                 val filePermission = Permission().apply {
-                    type = "user"
+                    type = "anyone"
                     role = "reader"
-                    emailAddress = recipientEmail
                 }
                 driveService.permissions().create(uploadedFile.id, filePermission)
                     .setSendNotificationEmail(false)
                     .execute()
 
-                // ✅ フォルダにも共有権限を付与（重要）
                 val folderPermission = Permission().apply {
-                    type = "user"
+                    type = "anyone"
                     role = "reader"
-                    emailAddress = recipientEmail
                 }
                 driveService.permissions().create(dateFolderId, folderPermission)
                     .setSendNotificationEmail(false)
                     .execute()
+
 
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
