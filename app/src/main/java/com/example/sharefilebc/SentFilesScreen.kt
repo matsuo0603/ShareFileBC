@@ -34,12 +34,18 @@ fun SentFilesScreen(modifier: Modifier = Modifier) {
                 Text("共有済みのファイルはありません")
             }
         } else {
-            LazyColumn(modifier = Modifier.padding(8.dp)) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp), // 横だけpadding（上下は contentPadding で管理）
+                contentPadding = PaddingValues(bottom = 80.dp) // 👈 これを追加！
+            ) {
                 items(sentFiles) { file ->
                     FileItem(file = file)
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
+
         }
     }
 }
