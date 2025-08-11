@@ -26,6 +26,9 @@ class HomeActivity : ComponentActivity() {
         Log.d("HomeActivity", "🟩 onCreate - Parsed folderId: $folderIdFromLink")
         Log.d("HomeActivity", "🟩 onCreate - DisplayName: $displayNameFromIntent")
 
+        // DeepLinkからの起動かどうかを判定
+        val isFromDeepLink = folderIdFromLink != null
+
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
         if (account == null) {
             val loginIntent = Intent(this, LoginActivity::class.java).apply {
@@ -38,7 +41,7 @@ class HomeActivity : ComponentActivity() {
 
         setContent {
             ShareFileBCTheme {
-                val initialSelectedTab = if (folderIdFromLink != null) BottomTab.Download else BottomTab.Home
+                val initialSelectedTab = if (isFromDeepLink) BottomTab.Download else BottomTab.Home
                 var selectedTab by remember { mutableStateOf(initialSelectedTab) }
 
                 Scaffold(
@@ -57,7 +60,9 @@ class HomeActivity : ComponentActivity() {
                             )
                         }
                         BottomTab.Download -> {
-                            DownloadScreen(initialFolderId = folderIdFromLink)
+                            DownloadScreen(
+                                initialFolderId = if (isFromDeepLink) folderIdFromLink else null
+                            )
                         }
                         BottomTab.Sent -> {
                             SentFilesScreen(modifier = Modifier.padding(innerPadding))
