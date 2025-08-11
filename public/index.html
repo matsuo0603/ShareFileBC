@@ -1,18 +1,56 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ShareFileBC — アプリに移動します</title>
+</head>
 <body>
-<p>アプリに移動しています。移動しない場合は <a id="manualLink" href="#">こちら</a> をタップしてください。</p>
+<p>
+    アプリに移動しています。移動しない場合は
+    <a id="manualLink" href="#">こちら</a> をタップしてください。
+</p>
+
+<div id="fallback" style="display:none; margin-top:12px;">
+    <p>アプリが開かない場合：</p>
+    <ul>
+        <li><a id="storeLinkAndroid" href="https://play.google.com/store/apps/details?id=com.example.sharefilebc">Android版をインストール</a></li>
+        <li><a id="storeLinkIOS" href="https://apps.apple.com/app/idXXXXXXXXX">iOS版をインストール</a></li>
+    </ul>
+</div>
 
 <script>
     document.addEventListener("DOMContentLoaded", function () {
-      const params = new URLSearchParams(window.location.search);
-      const folderId = params.get("folderId"); // ✅ パラメータ名を修正
+      // 1) 新形式: /folder/<ID> を優先
+      const segs = window.location.pathname.split("/").filter(Boolean);
+      let folderId = (segs.length >= 2 && segs[0] === "folder") ? segs[1] : null;
 
-      if (folderId) {
-        const deepLink = `sharefilebc://download?folderId=${folderId}`; // ✅ URL構築を修正
-        document.getElementById("manualLink").href = deepLink;
-        window.location.href = deepLink;
-      } else {
-        document.body.innerHTML = "<p>フォルダIDが指定されていません。</p>";
+      // 2) 互換: 旧形式 ?folderId=<ID> も一応サポート
+      if (!folderId) {
+        const params = new URLSearchParams(window.location.search);
+        folderId = params.get("folderId");
       }
+
+      if (!folderId) {
+        document.body.innerHTML = "<p>フォルダIDが指定されていません。</p>";
+        return;
+      }
+
+      // ✅ カスタムスキームでのフォールバック（アプリ未インストール時用）
+      // 既存実装に合わせて download?folderId=... を維持
+      const deepLink = `sharefilebc://download?folderId=${encodeURIComponent(folderId)}`;
+      const manualLink = document.getElementById("manualLink");
+      manualLink.href = deepLink;
+
+      // アプリ起動を試みる
+      window.location.href = deepLink;
+
+      // 1.5秒以内にページ離脱しなければ未インストールとみなして案内を表示
+      setTimeout(() => {
+        const fb = document.getElementById("fallback");
+        if (fb) fb.style.display = "block";
+      }, 1500);
     });
 </script>
 </body>
+</html>

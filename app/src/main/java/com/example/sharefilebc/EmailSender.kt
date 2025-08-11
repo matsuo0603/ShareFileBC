@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.text.Html
 import android.util.Log
+import android.net.Uri
 
 object EmailSender {
     fun sendEmailWithDriveLink(
@@ -13,13 +14,14 @@ object EmailSender {
         folderId: String
     ) {
         val subject = "ファイル共有: $fileName"
-        val link = "https://sharefilebc-52382.web.app/download?folderId=$folderId"
+
+        // ✅ 新URL形式: https://sharefilebcapp.web.app/folder/<ID>
+        val link = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
         val bodyHtml = """
-            <p>以下のリンクをタップするとファイルを開くことができます：</p>
-            <p><a href="$link" style="color:blue;text-decoration:underline;">ここをタップ</a></p>
-            <p>リンクが開けない場合は、下記URLをコピーしてブラウザに貼り付けてください：</p>
-            <p><code>$link</code></p>
+            <p>以下のリンクをタップすると、共有フォルダを開けます：</p>
+            <p><a href="$link" style="color:blue;text-decoration:underline;">$link</a></p>
+            <p>※ アプリ未インストール時はWebページが開きます。</p>
         """.trimIndent()
 
         try {
@@ -28,14 +30,15 @@ object EmailSender {
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(recipientEmail))
                 putExtra(Intent.EXTRA_SUBJECT, subject)
                 putExtra(Intent.EXTRA_TEXT, Html.fromHtml(bodyHtml, Html.FROM_HTML_MODE_LEGACY))
-                setPackage("com.google.android.gm") // ここは一時的にコメントアウトしてもOK
+                // 必要なら Gmail 固定を外してOK
+                // setPackage("com.google.android.gm")
             }
 
-            Log.d("EmailSender", "📨 Gmail送信画面を呼び出します: $link")
+            Log.d("EmailSender", "📨 メール作成を起動: $link")
             context.startActivity(intent)
 
         } catch (e: Exception) {
-            Log.e("EmailSender", "❌ Gmail起動失敗、chooserに切り替え", e)
+            Log.e("EmailSender", "❌ メールアプリ起動失敗、chooserに切り替え", e)
 
             val fallbackIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "message/rfc822"

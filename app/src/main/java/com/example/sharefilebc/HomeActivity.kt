@@ -19,7 +19,15 @@ class HomeActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val deepLinkUri: Uri? = intent?.data
-        val folderIdFromLink: String? = deepLinkUri?.getQueryParameter("folderId")
+
+        // ✅ 新形式: https://sharefilebcapp.web.app/folder/<ID>
+        val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
+            if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
+        }
+        // 互換: 旧形式 https://.../download?folderId=<ID>
+        val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
+        val folderIdFromLink: String? = folderIdFromPath ?: folderIdFromQuery
+
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
         Log.d("HomeActivity", "🟩 onCreate - Intent data: $deepLinkUri")
