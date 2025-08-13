@@ -35,8 +35,9 @@ class LoginActivity : ComponentActivity() {
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var launcher: ActivityResultLauncher<Intent>
 
-    // Deep LinkのURIを保持（HomeActivityから渡される）
+    // Deep Link と folderId を保持（HomeActivityから渡される）
     private var deepLinkUriFromHomeActivity: android.net.Uri? = null
+    private var folderIdFromHomeActivity: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,12 +54,14 @@ class LoginActivity : ComponentActivity() {
             handleSignInResult(task)
         }
 
-        // HomeActivityからDeep LinkのURIが渡されたかチェック
+        // HomeActivityから渡された Deep Link / folderId を取得
         deepLinkUriFromHomeActivity = intent?.data
+        folderIdFromHomeActivity = intent.getStringExtra("folderId")
         if (deepLinkUriFromHomeActivity != null) {
             Log.d("LoginActivity", "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
-        } else {
-            Log.d("LoginActivity", "onCreate: Normal app launch.")
+        }
+        if (folderIdFromHomeActivity != null) {
+            Log.d("LoginActivity", "onCreate: folderId received: $folderIdFromHomeActivity")
         }
 
         // 🔁 Deep Link経由で来ていて、未ログイン or Drive権限なしなら、自動でサインイン開始
@@ -135,6 +138,7 @@ class LoginActivity : ComponentActivity() {
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
                 deepLinkUriFromHomeActivity?.let { data = it } // Deep Linkを戻す
+                folderIdFromHomeActivity?.let { putExtra("folderId", it) }
             }
             startActivity(intent)
             finish()

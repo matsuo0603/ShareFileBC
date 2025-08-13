@@ -22,13 +22,17 @@ class HomeActivity : ComponentActivity() {
 
         val deepLinkUri: Uri? = intent?.data
 
+        // HomeActivity に戻ってくる際に folderId を extra で渡すことで
+        // 端末や OS バージョンによって URI が欠落する問題を防止する
+        val folderIdFromExtra: String? = intent.getStringExtra("folderId")
+
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
         val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
             if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
         }
         // 旧形式: https://.../download?folderId=<ID>
         val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
-        val folderIdFromLink: String? = folderIdFromPath ?: folderIdFromQuery
+        val folderIdFromLink: String? = folderIdFromExtra ?: folderIdFromPath ?: folderIdFromQuery
 
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
@@ -49,6 +53,7 @@ class HomeActivity : ComponentActivity() {
             startActivity(
                 Intent(this, LoginActivity::class.java).apply {
                     deepLinkUri?.let { data = it } // Deep Linkをそのまま引き継ぐ
+                    folderIdFromLink?.let { putExtra("folderId", it) }
                 }
             )
             finish()
