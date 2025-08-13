@@ -37,24 +37,22 @@ fun SentFilesScreen(modifier: Modifier = Modifier) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 8.dp), // 横だけpadding（上下は contentPadding で管理）
-                contentPadding = PaddingValues(bottom = 80.dp) // 👈 これを追加！
+                    .padding(horizontal = 8.dp),
+                contentPadding = PaddingValues(bottom = 80.dp)
             ) {
                 items(sentFiles) { file ->
                     FileItem(file = file)
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
-
         }
     }
 }
 
 @Composable
 fun FileItem(file: SharedFolderEntity) {
-    // SharedFolderEntityのdateフィールドを使用（uploadDateTimeの代わり）
     val uploadDateTime = parseJSTDateTime(file.date)
-    val deleteDateTime = uploadDateTime?.let { calculateDeleteTime(it) }
+    val deleteDateTime = uploadDateTime?.let { calculateDeleteTime7Days(it) }
     val deleteTimeStr = deleteDateTime?.let { formatJSTTime(it) } ?: "不明"
 
     Card(
@@ -74,15 +72,15 @@ fun FileItem(file: SharedFolderEntity) {
 fun parseJSTDateTime(datetimeStr: String): Date? {
     return try {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.JAPAN).parse(datetimeStr)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }
 
-fun calculateDeleteTime(uploaded: Date): Date {
+fun calculateDeleteTime7Days(uploaded: Date): Date {
     val calendar = Calendar.getInstance()
     calendar.time = uploaded
-    calendar.add(Calendar.MINUTE, 10)
+    calendar.add(Calendar.DAY_OF_YEAR, 7) // ✅ 7日
     return calendar.time
 }
 

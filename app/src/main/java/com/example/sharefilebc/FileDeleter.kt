@@ -43,7 +43,8 @@ object FileDeleter {
     private fun calculateDeleteTime(uploadDate: Date): Date {
         val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
         calendar.time = uploadDate
-        calendar.add(Calendar.MINUTE, 10) // テスト用: 10分後に削除
+        calendar.add(Calendar.DAY_OF_YEAR, 7) // 7日後に削除
+
         return calendar.time
     }
 

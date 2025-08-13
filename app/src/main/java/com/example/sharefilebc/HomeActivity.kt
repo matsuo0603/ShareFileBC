@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.common.api.Scope
+import com.google.api.services.drive.DriveScopes
 
 class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,11 +22,11 @@ class HomeActivity : ComponentActivity() {
 
         val deepLinkUri: Uri? = intent?.data
 
-        // ✅ 新形式: https://sharefilebcapp.web.app/folder/<ID>
+        // 新形式: https://sharefilebcapp.web.app/folder/<ID>
         val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
             if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
         }
-        // 互換: 旧形式 https://.../download?folderId=<ID>
+        // 旧形式: https://.../download?folderId=<ID>
         val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
         val folderIdFromLink: String? = folderIdFromPath ?: folderIdFromQuery
 
@@ -34,15 +36,21 @@ class HomeActivity : ComponentActivity() {
         Log.d("HomeActivity", "🟩 onCreate - Parsed folderId: $folderIdFromLink")
         Log.d("HomeActivity", "🟩 onCreate - DisplayName: $displayNameFromIntent")
 
-        // DeepLinkからの起動かどうかを判定
         val isFromDeepLink = folderIdFromLink != null
 
+        // ✅ アカウント + Drive スコープを両方チェック
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
-        if (account == null) {
-            val loginIntent = Intent(this, LoginActivity::class.java).apply {
-                deepLinkUri?.let { data = it }
-            }
-            startActivity(loginIntent)
+        val hasDriveScope = account?.let {
+            GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE))
+        } ?: false
+
+        if (account == null || !hasDriveScope) {
+            Log.d("HomeActivity", "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
+            startActivity(
+                Intent(this, LoginActivity::class.java).apply {
+                    deepLinkUri?.let { data = it } // Deep Linkをそのまま引き継ぐ
+                }
+            )
             finish()
             return
         }
@@ -79,5 +87,11 @@ class HomeActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    @Deprecated("Activity Result API への移行推奨だが互換のため残置")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        EmailSender.onActivityResultBridge(this, requestCode, resultCode)
     }
 }

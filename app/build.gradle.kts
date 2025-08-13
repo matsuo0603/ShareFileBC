@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "com.example.sharefilebc"
-    compileSdk = 35  // 35から34に下げて安定性を確保
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.sharefilebc"
         minSdk = 26
-        targetSdk = 35  // targetSdkも一致させる
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -43,6 +43,10 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
         }
     }
     applicationVariants.all {
@@ -82,19 +86,22 @@ dependencies {
     // ViewModel Compose統合 - 追加
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
-    // Google サインイン
+    // Google サインイン - 統合版
     implementation("com.google.android.gms:play-services-auth:20.7.0")
 
-    // Google Drive API
+    // Google API Client - 統一
     implementation("com.google.api-client:google-api-client-android:2.2.0")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20230822-2.0.0")
-    implementation("com.google.oauth-client:google-oauth-client-jetty:1.34.1")
     implementation("com.google.http-client:google-http-client-gson:1.43.3")
-    implementation("com.google.android.gms:play-services-drive:17.0.0")
+    implementation("com.google.oauth-client:google-oauth-client-jetty:1.34.1")
 
-    // Gmail API
+    // Google Drive API
+    implementation("com.google.apis:google-api-services-drive:v3-rev20230822-2.0.0")
+
+    // Gmail API - 重複削除して統一
     implementation("com.google.apis:google-api-services-gmail:v1-rev20220404-2.0.0")
-    implementation("javax.mail:mail:1.4.7")
+
+    // JavaMail API - Gmail送信に必要
+    implementation("com.sun.mail:javax.mail:1.6.2")
 
     // AndroidX
     implementation("androidx.core:core-ktx:1.10.1")
@@ -108,6 +115,9 @@ dependencies {
     implementation("commons-io:commons-io:2.13.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
+    // WorkManager
+    implementation(libs.androidx.work.runtime.ktx)
+
     // テスト
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -116,7 +126,4 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
-
-    //WorkManagerライブラリ
-    implementation (libs.androidx.work.runtime.ktx)
 }

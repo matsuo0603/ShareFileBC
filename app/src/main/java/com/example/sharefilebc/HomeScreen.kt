@@ -56,7 +56,14 @@ fun HomeScreen(
                                 } else {
                                     val (fileName, _, folderId) = result
                                     Log.d("ShareFileBC", "📦 folderId being sent: $folderId")
-                                    EmailSender.sendEmailWithDriveLink(context, user.email, fileName, folderId)
+
+                                    // ✅ メール処理は EmailSender に集約（自動送信 or 権限同意→後送信）
+                                    EmailSender.sendEmailWithDriveLink(
+                                        context = context,
+                                        recipientEmail = user.email,
+                                        fileName = fileName,
+                                        folderId = folderId
+                                    )
                                 }
                             }
                         }
@@ -121,7 +128,7 @@ fun HomeScreen(
 
         if (isUploading) {
             CircularProgressIndicator()
-            Text("アップロード中... Gmailに遷移します", modifier = Modifier.padding(top = 8.dp))
+            Text("アップロード中... Gmailで送信します", modifier = Modifier.padding(top = 8.dp))
         }
 
         users.forEach { user ->

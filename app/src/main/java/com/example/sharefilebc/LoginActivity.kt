@@ -35,8 +35,7 @@ class LoginActivity : ComponentActivity() {
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var launcher: ActivityResultLauncher<Intent>
 
-    // Deep LinkのURIを保持するためのプロパティ
-    // HomeActivityからリダイレクトされた場合にのみ設定される
+    // Deep LinkのURIを保持（HomeActivityから渡される）
     private var deepLinkUriFromHomeActivity: android.net.Uri? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,12 +54,19 @@ class LoginActivity : ComponentActivity() {
         }
 
         // HomeActivityからDeep LinkのURIが渡されたかチェック
-        // intent.getBooleanExtra("isDeepLink", false) の代わりに、dataそのものをチェック
-        if (intent?.data != null) {
-            deepLinkUriFromHomeActivity = intent.data
-            Log.d("LoginActivity", "LoginActivity onCreate: received Deep Link URI from HomeActivity: $deepLinkUriFromHomeActivity")
+        deepLinkUriFromHomeActivity = intent?.data
+        if (deepLinkUriFromHomeActivity != null) {
+            Log.d("LoginActivity", "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
         } else {
-            Log.d("LoginActivity", "LoginActivity onCreate: Normal app launch.")
+            Log.d("LoginActivity", "onCreate: Normal app launch.")
+        }
+
+        // 🔁 Deep Link経由で来ていて、未ログイン or Drive権限なしなら、自動でサインイン開始
+        val already = GoogleSignIn.getLastSignedInAccount(this)
+        val hasDrive = already?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
+        if (deepLinkUriFromHomeActivity != null && (already == null || !hasDrive)) {
+            val signInIntent = googleSignInClient.signInIntent
+            launcher.launch(signInIntent)
         }
 
         setContent {
@@ -103,7 +109,7 @@ class LoginActivity : ComponentActivity() {
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() }
                     ) {
-                        // 既にログイン済みのセッションをクリアしてからサインインプロセスを開始
+                        // 明示タップ時もサインイン開始
                         googleSignInClient.signOut().addOnCompleteListener {
                             val signInIntent = googleSignInClient.signInIntent
                             launcher.launch(signInIntent)
@@ -128,19 +134,13 @@ class LoginActivity : ComponentActivity() {
 
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
-                // LoginActivityに引き継がれたDeep LinkのURIがあれば、HomeActivityにも引き継ぐ
-                deepLinkUriFromHomeActivity?.let { uri ->
-                    data = uri
-                    Log.d("LoginActivity", "Login successful, passing Deep Link URI to HomeActivity: $uri")
-                }
+                deepLinkUriFromHomeActivity?.let { data = it } // Deep Linkを戻す
             }
             startActivity(intent)
             finish()
 
         } catch (e: Exception) {
-            e.printStackTrace()
-            println("Googleサインイン失敗: ${e.message}")
-            Log.e("LoginActivity", "Googleサインイン失敗: ${e.message}")
+            Log.e("LoginActivity", "Googleサインイン失敗: ${e.message}", e)
         }
     }
 }

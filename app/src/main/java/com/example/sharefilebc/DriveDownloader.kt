@@ -21,6 +21,9 @@ import java.util.*
 
 class DriveDownloader(private val context: Context) {
 
+    // 表示用期限：アップロードから7日
+    private val EXPIRATION_MILLIS: Long = 7L * 24 * 60 * 60 * 1000
+
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
@@ -67,7 +70,7 @@ class DriveDownloader(private val context: Context) {
                     val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
                     val uploadDate = Date(uploadMillis)
                     val uploadStr = fullFormatter.format(uploadDate)
-                    val deleteStr = fullFormatter.format(Date(uploadMillis + 10 * 60 * 1000))
+                    val deleteStr = fullFormatter.format(Date(uploadMillis + EXPIRATION_MILLIS))
 
                     DriveFileInfo(
                         id = file.id,

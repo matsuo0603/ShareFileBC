@@ -28,6 +28,11 @@
         <!-- ✅ HomeActivity: Deep Link / App Links 対応 -->
         <activity
             android:name=".HomeActivity"
+            android:exported="true" />
+
+        <!-- 🔓 Login: Deep Link / App Links 対応 -->
+        <activity
+            android:name=".LoginActivity"
             android:exported="true">
 
             <!-- 🔷 カスタムスキーム（互換用：必要なら残す） -->

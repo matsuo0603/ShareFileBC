@@ -1,5 +1,6 @@
 package com.example.sharefilebc
 
+import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,6 +26,7 @@ fun DownloadScreen(initialFolderId: String?) {
     var currentFolderStructure by remember { mutableStateOf<FolderStructure?>(null) }
     var receivedFolders by remember { mutableStateOf<List<ReceivedFolderEntity>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    var needsLogin by remember { mutableStateOf(false) } // 👈 追加
 
     val db = remember { AppDatabase.getDatabase(context) }
     val dao = db.receivedFolderDao()
@@ -33,7 +35,10 @@ fun DownloadScreen(initialFolderId: String?) {
         if (initialFolderId != null) {
             isLoading = true
             val folderStructure = downloader.getFolderStructure(initialFolderId)
-            if (folderStructure != null && folderStructure.files.any { !it.isFolder }) {
+            if (folderStructure == null) {
+                // Drive未ログイン/権限不足などで取得失敗時
+                needsLogin = true
+            } else if (folderStructure.files.any { !it.isFolder }) {
                 selectedDate = folderStructure.folderName
                 currentFolderStructure = folderStructure
 
@@ -71,6 +76,27 @@ fun DownloadScreen(initialFolderId: String?) {
                     CircularProgressIndicator()
                 }
             } else {
+                // 👇 追加：必要に応じてログイン誘導
+                if (needsLogin) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("GoogleログインまたはDrive権限が必要です。")
+                            Spacer(Modifier.height(8.dp))
+                            Button(onClick = {
+                                context.startActivity(Intent(context, LoginActivity::class.java).apply {
+                                    // Deep Link は HomeActivity -> LoginActivity で受ける想定なのでここでは不要
+                                })
+                            }) {
+                                Text("ログインへ")
+                            }
+                        }
+                    }
+                }
+
                 if (selectedDate != null && currentFolderStructure != null) {
                     Button(
                         onClick = {
