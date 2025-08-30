@@ -2,7 +2,9 @@ package com.example.sharefilebc
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.MotionEvent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -24,13 +27,15 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.tasks.Task
-import androidx.compose.ui.ExperimentalComposeUiApi
-import android.util.Log
 import com.google.android.gms.common.api.Scope
+import com.google.android.gms.tasks.Task
 import com.google.api.services.drive.DriveScopes
 
 class LoginActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "LoginActivity"
+    }
 
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var launcher: ActivityResultLauncher<Intent>
@@ -46,7 +51,6 @@ class LoginActivity : ComponentActivity() {
             .requestEmail()
             .requestScopes(Scope(DriveScopes.DRIVE))
             .build()
-
         googleSignInClient = GoogleSignIn.getClient(this, gso)
 
         launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -57,26 +61,24 @@ class LoginActivity : ComponentActivity() {
         // HomeActivityから渡された Deep Link / folderId を取得
         deepLinkUriFromHomeActivity = intent?.data
         folderIdFromHomeActivity = intent.getStringExtra("folderId")
-        if (deepLinkUriFromHomeActivity != null) {
-            Log.d("LoginActivity", "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
-        }
-        if (folderIdFromHomeActivity != null) {
-            Log.d("LoginActivity", "onCreate: folderId received: $folderIdFromHomeActivity")
-        }
+        Log.d(TAG, "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
+        Log.d(TAG, "onCreate: folderId received: $folderIdFromHomeActivity")
 
-        // 🔁 Deep Link経由で来ていて、未ログイン or Drive権限なしなら、自動でサインイン開始
+        // 目視確認用
+        Toast.makeText(
+            this,
+            "LoginActivity:\ndata=${deepLinkUriFromHomeActivity?.toString() ?: "null"}\nfolderId=$folderIdFromHomeActivity",
+            Toast.LENGTH_LONG
+        ).show()
+
+        // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         val already = GoogleSignIn.getLastSignedInAccount(this)
         val hasDrive = already?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
         if (deepLinkUriFromHomeActivity != null && (already == null || !hasDrive)) {
-            val signInIntent = googleSignInClient.signInIntent
-            launcher.launch(signInIntent)
+            launcher.launch(googleSignInClient.signInIntent)
         }
 
-        setContent {
-            ShareFileBCTheme {
-                LoginScreen()
-            }
-        }
+        setContent { ShareFileBCTheme { LoginScreen() } }
     }
 
     @OptIn(ExperimentalComposeUiApi::class)
@@ -91,14 +93,13 @@ class LoginActivity : ComponentActivity() {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "ShareFileBC",
-                style = MaterialTheme.typography.headlineMedium
-            )
+            Text(text = "ShareFileBC", style = MaterialTheme.typography.headlineMedium)
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            Box(
+            Image(
+                painter = painterResource(id = R.drawable.btn_google_signin),
+                contentDescription = "Google Sign In",
                 modifier = Modifier
                     .width(250.dp)
                     .pointerInteropFilter {
@@ -108,25 +109,17 @@ class LoginActivity : ComponentActivity() {
                         }
                         false
                     }
+                    .alpha(if (pressed) 0.7f else 1f)
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() }
                     ) {
-                        // 明示タップ時もサインイン開始
+                        // 明示タップ時もサインイン開始（古いトークンを明示的に捨ててから）
                         googleSignInClient.signOut().addOnCompleteListener {
-                            val signInIntent = googleSignInClient.signInIntent
-                            launcher.launch(signInIntent)
+                            launcher.launch(googleSignInClient.signInIntent)
                         }
                     }
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.btn_google_signin),
-                    contentDescription = "Google Sign In",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .alpha(if (pressed) 0.7f else 1f)
-                )
-            }
+            )
         }
     }
 
@@ -135,16 +128,23 @@ class LoginActivity : ComponentActivity() {
             val account = task.getResult(Exception::class.java)
             val displayName = account?.displayName ?: "ログインユーザー"
 
+            Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=${GoogleSignIn.hasPermissions(account, Scope(DriveScopes.DRIVE))}")
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
-                deepLinkUriFromHomeActivity?.let { data = it } // Deep Linkを戻す
+                // Deep Link は data に、folderId は extra に戻す（両経路で再現耐性UP）
+                deepLinkUriFromHomeActivity?.let { data = it }
                 folderIdFromHomeActivity?.let { putExtra("folderId", it) }
             }
+            Toast.makeText(
+                this,
+                "Back to Home:\ndata=${deepLinkUriFromHomeActivity?.toString() ?: "null"}\nfolderId=$folderIdFromHomeActivity",
+                Toast.LENGTH_LONG
+            ).show()
             startActivity(intent)
             finish()
 
         } catch (e: Exception) {
-            Log.e("LoginActivity", "Googleサインイン失敗: ${e.message}", e)
+            Log.e(TAG, "❌ Googleサインイン失敗: ${e.message}", e)
         }
     }
 }

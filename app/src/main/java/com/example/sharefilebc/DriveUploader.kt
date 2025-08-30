@@ -76,15 +76,7 @@ class DriveUploader(private val context: Context) {
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // ファイルに共有権限を付与
-                val filePermission = Permission().apply {
-                    type = "anyone"
-                    role = "reader"
-                }
-                driveService.permissions().create(uploadedFile.id, filePermission)
-                    .setSendNotificationEmail(false)
-                    .execute()
-
+                // ✅ フォルダにのみ共有権限を付与（ファイル個別は付けない）
                 val folderPermission = Permission().apply {
                     type = "anyone"
                     role = "reader"
@@ -93,7 +85,7 @@ class DriveUploader(private val context: Context) {
                     .setSendNotificationEmail(false)
                     .execute()
 
-
+                // 送信ログを保存（フォルダ単位共有が前提でも記録仕様はそのまま可）
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
                         date = currentDateTime,

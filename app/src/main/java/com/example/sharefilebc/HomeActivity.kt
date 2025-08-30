@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.*
@@ -17,13 +18,17 @@ import com.google.android.gms.common.api.Scope
 import com.google.api.services.drive.DriveScopes
 
 class HomeActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "HomeActivity"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val deepLinkUri: Uri? = intent?.data
 
-        // HomeActivity に戻ってくる際に folderId を extra で渡すことで
-        // 端末や OS バージョンによって URI が欠落する問題を防止する
+        // HomeActivity に戻ってくる際に folderId を extra で受ける（OS差/端末差で data が欠落する対策）
         val folderIdFromExtra: String? = intent.getStringExtra("folderId")
 
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
@@ -32,13 +37,20 @@ class HomeActivity : ComponentActivity() {
         }
         // 旧形式: https://.../download?folderId=<ID>
         val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
-        val folderIdFromLink: String? = folderIdFromExtra ?: folderIdFromPath ?: folderIdFromQuery
 
+        val folderIdFromLink: String? = folderIdFromExtra ?: folderIdFromPath ?: folderIdFromQuery
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
-        Log.d("HomeActivity", "🟩 onCreate - Intent data: $deepLinkUri")
-        Log.d("HomeActivity", "🟩 onCreate - Parsed folderId: $folderIdFromLink")
-        Log.d("HomeActivity", "🟩 onCreate - DisplayName: $displayNameFromIntent")
+        Log.d(TAG, "🟩 onCreate - Intent data: $deepLinkUri")
+        Log.d(TAG, "🟩 onCreate - folderId(extra=$folderIdFromExtra, path=$folderIdFromPath, query=$folderIdFromQuery) -> PICKED: $folderIdFromLink")
+        Log.d(TAG, "🟩 onCreate - DisplayName: $displayNameFromIntent")
+
+        // 目視確認用（端末上に出す）
+        Toast.makeText(
+            this,
+            "HomeActivity:\ndata=${deepLinkUri?.toString() ?: "null"}\nfolderId=$folderIdFromLink",
+            Toast.LENGTH_LONG
+        ).show()
 
         val isFromDeepLink = folderIdFromLink != null
 
@@ -47,12 +59,14 @@ class HomeActivity : ComponentActivity() {
         val hasDriveScope = account?.let {
             GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE))
         } ?: false
+        Log.d(TAG, "🟩 SignedIn=${account != null}, DriveScope=$hasDriveScope, displayName=${account?.displayName}")
 
         if (account == null || !hasDriveScope) {
-            Log.d("HomeActivity", "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
+            Log.d(TAG, "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
             startActivity(
                 Intent(this, LoginActivity::class.java).apply {
-                    deepLinkUri?.let { data = it } // Deep Linkをそのまま引き継ぐ
+                    // Deep Link を data で、folderId を extra でも渡す（二重化で欠落対策）
+                    deepLinkUri?.let { data = it }
                     folderIdFromLink?.let { putExtra("folderId", it) }
                 }
             )
