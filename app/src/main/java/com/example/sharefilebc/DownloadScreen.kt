@@ -18,6 +18,11 @@ import com.example.sharefilebc.data.ReceivedFolderEntity
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
+
+private fun String.toDateOnly(): String = DATE_REGEX.find(this)?.value ?: this
+
+
 @Composable
 fun DownloadScreen(initialFolderId: String?) {
     val TAG = "DownloadScreen"
@@ -45,21 +50,46 @@ fun DownloadScreen(initialFolderId: String?) {
                 // 未認証/権限不足/その他エラー
                 needsLogin = true
             } else {
-                currentFolderStructure = folderStructure
-
-                // DB 登録は「初めて見る folderId なら」実行
-                val exists = dao.findByFolderId(initialFolderId)
-                if (exists == null) {
-                    val first = folderStructure.files.firstOrNull()
-                    dao.insert(
-                        ReceivedFolderEntity(
-                            folderId = initialFolderId,
-                            folderName = folderStructure.folderName, // 例: yyyy-MM-dd
-                            senderName = first?.senderName ?: "Unknown Sender",
-                            uploadDateTime = first?.uploadDateTime ?: "",
-                            deleteDateTime = first?.deleteDateTime ?: ""
+                val childFolder = folderStructure.files.firstOrNull { it.isFolder && DATE_REGEX.find(it.name) != null }
+                if (childFolder != null) {
+                    val childStructure = downloader.getFolderStructure(childFolder.id)
+                    if (childStructure == null) {
+                        needsLogin = true
+                    } else {
+                        currentFolderStructure = childStructure.copy(
+                            folderName = childStructure.folderName.toDateOnly()
                         )
+                        val exists = dao.findByFolderId(childFolder.id)
+                    if (exists == null) {
+                        val first = childStructure.files.firstOrNull()
+                        dao.insert(
+                            ReceivedFolderEntity(
+                                folderId = childFolder.id,
+                                folderName = childStructure.folderName.toDateOnly(), // 例: yyyy-MM-dd
+                                senderName = first?.senderName ?: "Unknown Sender",
+                                uploadDateTime = first?.uploadDateTime ?: "",
+                                deleteDateTime = first?.deleteDateTime ?: "",
+                            )
+                        )
+                    }
+                }
+            } else {
+                currentFolderStructure = folderStructure.copy(
+                    folderName = folderStructure.folderName.toDateOnly()
                     )
+                    val exists = dao.findByFolderId(initialFolderId)
+                    if (exists == null) {
+                        val first = folderStructure.files.firstOrNull()
+                        dao.insert(
+                            ReceivedFolderEntity(
+                                folderId = initialFolderId,
+                                folderName = folderStructure.folderName.toDateOnly(), // 例: yyyy-MM-dd
+                                senderName = first?.senderName ?: "Unknown Sender",
+                                uploadDateTime = first?.uploadDateTime ?: "",
+                                deleteDateTime = first?.deleteDateTime ?: "",
+                            )
+                        )
+                    }
                 }
             }
             isLoading = false
@@ -191,7 +221,7 @@ fun DownloadScreen(initialFolderId: String?) {
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
-                                Text("📁 ${group.dateName}", style = MaterialTheme.typography.titleMedium)
+                                Text("📁 ${group.dateName.toDateOnly()}", style = MaterialTheme.typography.titleMedium)
                                 if (group.senderName.isNotBlank()) {
                                     Text("👤 ${group.senderName}", style = MaterialTheme.typography.bodyMedium)
                                 }
