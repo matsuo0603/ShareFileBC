@@ -62,11 +62,9 @@ class DriveDownloader(private val context: Context) {
                 val fullFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply {
                     timeZone = jst
                 }
-                val dateOnlyFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply {
-                    timeZone = jst
-                }
 
                 val files = fileList.files?.map { file ->
+                    val isFolder = file.mimeType == "application/vnd.google-apps.folder"
                     val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
                     val uploadDate = Date(uploadMillis)
                     val uploadStr = fullFormatter.format(uploadDate)
@@ -76,17 +74,15 @@ class DriveDownloader(private val context: Context) {
                         id = file.id,
                         name = file.name,
                         mimeType = file.mimeType,
-                        isFolder = file.mimeType == "application/vnd.google-apps.folder",
-                        senderName = parentFolderName,
-                        uploadDateTime = uploadStr,
-                        deleteDateTime = deleteStr
+                        isFolder = isFolder,
+                        senderName = if (isFolder) "" else parentFolderName,
+                        uploadDateTime = if (isFolder) "" else uploadStr,
+                        deleteDateTime = if (isFolder) "" else deleteStr
                     )
                 } ?: emptyList()
 
-                val folderName = files.firstOrNull()?.let {
-                    val uploadDate = fullFormatter.parse(it.uploadDateTime)
-                    dateOnlyFormatter.format(uploadDate!!)
-                } ?: "Unknown Date"
+                val folderName = folderInfo.name ?: "Unknown Date"
+
 
                 FolderStructure(
                     folderName = folderName,

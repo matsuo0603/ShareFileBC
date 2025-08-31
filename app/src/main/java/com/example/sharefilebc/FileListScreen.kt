@@ -71,9 +71,7 @@ fun FileListScreen(folderStructure: FolderStructure) {
 
         // 表示用コレクション
         val folders = remember(current) {
-            current.files.filter {
-                it.isFolder && !Regex("""\d{4}-\d{2}-\d{2}""").matches(it.name)
-            }
+            current.files.filter { it.isFolder }
         }
         // 既存仕様を踏襲してファイルは削除予定時刻順
         val files = remember(current) { current.files.filter { !it.isFolder }.sortedBy { it.deleteDateTime } }

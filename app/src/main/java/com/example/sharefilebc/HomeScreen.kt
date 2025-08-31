@@ -146,7 +146,7 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                     enabled = !isUploading
                 ) {
-                    Text("${user.name}（${user.email}）にアップロード")
+                    Text("${user.name}（${user.email}）")
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))

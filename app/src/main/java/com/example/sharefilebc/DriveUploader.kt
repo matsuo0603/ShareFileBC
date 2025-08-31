@@ -76,16 +76,16 @@ class DriveUploader(private val context: Context) {
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // ✅ フォルダにのみ共有権限を付与（ファイル個別は付けない）
+                // ✅ 受信者名フォルダを共有（ファイル個別や日付フォルダには付与しない）
                 val folderPermission = Permission().apply {
                     type = "anyone"
                     role = "reader"
                 }
-                driveService.permissions().create(dateFolderId, folderPermission)
+                driveService.permissions().create(recipientFolderId, folderPermission)
                     .setSendNotificationEmail(false)
                     .execute()
 
-                // 送信ログを保存（フォルダ単位共有が前提でも記録仕様はそのまま可）
+                // 送信ログは従来どおり日付フォルダIDを保存し、削除処理に利用
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
                         date = currentDateTime,
@@ -96,7 +96,8 @@ class DriveUploader(private val context: Context) {
                     )
                 )
 
-                return@withContext Triple(fileName, uploadedFile.id, dateFolderId)
+                // 共有リンク用には受信者名フォルダIDを返す
+                return@withContext Triple(fileName, uploadedFile.id, recipientFolderId)
             } catch (e: Exception) {
                 Log.e("DriveUploader", "Upload error", e)
                 return@withContext null
