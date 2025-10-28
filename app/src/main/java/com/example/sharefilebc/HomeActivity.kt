@@ -28,7 +28,7 @@ class HomeActivity : ComponentActivity() {
 
         val deepLinkUri: Uri? = intent?.data
 
-        // HomeActivity に戻ってくる際に folderId を extra で受ける（OS差/端末差で data が欠落する対策）
+        // HomeActivity に戻ってくる際に folderId を extra で受ける（OS差/端末差で data 欠落の対策）
         val folderIdFromExtra: String? = intent.getStringExtra("folderId")
 
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
@@ -76,7 +76,8 @@ class HomeActivity : ComponentActivity() {
 
         setContent {
             ShareFileBCTheme {
-                val initialSelectedTab = if (isFromDeepLink) BottomTab.Download else BottomTab.Home
+                // DeepLinkで来たときは Shared を初期表示、それ以外は Home
+                val initialSelectedTab = if (isFromDeepLink) BottomTab.Shared else BottomTab.Home
                 var selectedTab by remember { mutableStateOf(initialSelectedTab) }
 
                 Scaffold(
@@ -91,16 +92,12 @@ class HomeActivity : ComponentActivity() {
                         BottomTab.Home -> {
                             HomeScreen(
                                 modifier = Modifier.padding(innerPadding),
-                                displayName = displayNameFromIntent
                             )
                         }
-                        BottomTab.Download -> {
+                        BottomTab.Shared -> {
                             DownloadScreen(
                                 initialFolderId = if (isFromDeepLink) folderIdFromLink else null
                             )
-                        }
-                        BottomTab.Sent -> {
-                            SentFilesScreen(modifier = Modifier.padding(innerPadding))
                         }
                     }
                 }
