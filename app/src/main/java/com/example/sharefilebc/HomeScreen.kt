@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowForwardIos
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
@@ -192,10 +191,6 @@ fun HomeScreen(
                         onShare = {
                             selectedUser = user
                             openFileLauncher.launch(Unit)
-                        },
-                        onOpen = {
-                            selectedUser = user
-                            openFileLauncher.launch(Unit)
                         }
                     )
                 }
@@ -261,7 +256,6 @@ private fun SwipeRevealUserRow(
     user: UserEntity,
     onDelete: () -> Unit,
     onShare: () -> Unit,
-    onOpen: () -> Unit,
 ) {
     val corner = 16.dp
     val actionWidthDp = 160.dp
@@ -344,14 +338,7 @@ private fun SwipeRevealUserRow(
                     }
                 },
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            onClick = {
-                if (abs(offsetX.value) > 1f) {
-                    scope.launch { offsetX.animateTo(0f, tween(180)) }
-                } else {
-                    onOpen()
-                }
-            }
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
         ) {
             Row(
                 modifier = Modifier
@@ -368,11 +355,6 @@ private fun SwipeRevealUserRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Icon(
-                    imageVector = Icons.Outlined.ArrowForwardIos,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
     }
