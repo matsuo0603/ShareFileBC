@@ -55,3 +55,14 @@ val md_theme_dark_onError = Color(0xFF000000)
 
 /* === 追加: ダーク時の無効アイコン色（やや明るめグレー） === */
 val md_nav_dark_icon_inactive = Color(0xFF9FA3A8)
+
+/* -------- Shared Screen Custom Palette -------- */
+object SharedScreenColors {
+    val Background = Color(0xFFE5E5EA)
+    val TabSelected = Color(0xFFFFFFFF)
+    val TabUnselected = Color(0xFFD1D1D6)
+    val UserCardBackground = Color(0xFFFFFFFF)
+    val UserCardBorder = Color(0xFFDDDEE3)
+    val UserEmail = Color(0xFF8E8E93)
+    val DateLabel = Color(0xFF3A3A3C)
+}

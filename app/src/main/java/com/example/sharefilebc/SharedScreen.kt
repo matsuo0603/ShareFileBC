@@ -21,8 +21,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.sharefilebc.ui.theme.SharedScreenColors
 
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
@@ -38,19 +40,27 @@ fun SharedScreen(
         mutableStateOf(if (initialFolderId != null) SharedInnerTab.Received else SharedInnerTab.Sent)
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            SharedTabSelector(
-                selectedTab = selectedTab,
-                onSelected = { selectedTab = it }
-            )
-        }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(SharedScreenColors.Background)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(
+            text = "共有ファイル",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        SharedTabSelector(
+            selectedTab = selectedTab,
+            onSelected = { selectedTab = it }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         when (selectedTab) {
             SharedInnerTab.Sent -> {
@@ -58,7 +68,6 @@ fun SharedScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
                 ) {
                     SentFilesScreen(modifier = Modifier.fillMaxSize())
                 }
@@ -86,28 +95,35 @@ private fun SharedTabSelector(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(24.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(SharedScreenColors.TabUnselected.copy(alpha = 0.4f))
             .padding(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         SharedInnerTab.values().forEach { tab ->
             val isSelected = tab == selectedTab
-            val backgroundColor = if (isSelected) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                Color.Transparent
-            }
-            val contentColor = if (isSelected) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
-
             Box(
                 modifier = Modifier
                     .weight(1f)
+                    .padding(horizontal = 4.dp)
+                    .then(
+                        if (isSelected) {
+                            Modifier.shadow(
+                                elevation = 6.dp,
+                                shape = RoundedCornerShape(20.dp),
+                                clip = false
+                            )
+                        } else {
+                            Modifier
+                        }
+                    )
                     .clip(RoundedCornerShape(20.dp))
-                    .background(backgroundColor)
+                    .background(
+                        color = if (isSelected) {
+                            SharedScreenColors.TabSelected
+                        } else {
+                            SharedScreenColors.TabUnselected
+                        }
+                    )
                     .clickable { onSelected(tab) }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center
@@ -115,7 +131,11 @@ private fun SharedTabSelector(
                 Text(
                     text = tab.label,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = contentColor
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
         }
