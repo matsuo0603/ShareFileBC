@@ -95,7 +95,8 @@ class HomeActivity : ComponentActivity() {
                             )
                         }
                         BottomTab.Shared -> {
-                            DownloadScreen(
+                            SharedScreen(
+                                modifier = Modifier.padding(innerPadding),
                                 initialFolderId = if (isFromDeepLink) folderIdFromLink else null
                             )
                         }
