@@ -100,7 +100,7 @@ private fun SharedTabSelector(
 ) {
     val containerShape = RoundedCornerShape(SharedScreenDimens.TabContainerCorner)
     val indicatorShape = RoundedCornerShape(SharedScreenDimens.TabItemCorner)
-    val tabs = SharedInnerTab.values()
+    val tabs = SharedInnerTab.entries
     val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
 
     Box(
@@ -108,12 +108,12 @@ private fun SharedTabSelector(
             .fillMaxWidth()
             .clip(containerShape)
             .background(SharedScreenColors.TabUnselected.copy(alpha = 0.4f))
-            .padding(4.dp)
+            .padding(3.dp)
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
+                .height(36.dp)
         ) {
             val indicatorWidth = maxWidth / tabs.size
             val targetOffset = indicatorWidth * selectedIndex
@@ -147,7 +147,7 @@ private fun SharedTabSelector(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
                                 ) { onSelected(tab) }
-                                .padding(vertical = 10.dp),
+                                .padding(vertical = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
