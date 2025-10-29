@@ -9,7 +9,21 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -18,20 +32,41 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.ui.theme.rememberAvatarColors
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -123,7 +158,7 @@ fun HomeScreen(
                 title = {
                     Text(
                         text = "ShareFileBC",
-                        style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold)
+                        style = MaterialTheme.typography.headlineLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                     )
                 },
                 actions = {
@@ -170,7 +205,7 @@ fun HomeScreen(
                 Spacer(Modifier.height(12.dp))
                 Text(
                     text = "現在登録されている共有相手はいません",
-                    style = MaterialTheme.typography.bodyLarge, // あなたの命名に合わせて必要なら typography に
+                    style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -368,26 +403,61 @@ private fun AccountInitialAvatar(
     modifier: Modifier = Modifier,
     sizeDp: Int = 40
 ) {
-    val initial = when {
-        !name.isNullOrBlank() -> name.trim().first().uppercase()
-        !email.isNullOrBlank() -> email.trim().first().uppercase()
-        else -> "?"
-    }
-
-    val bg = MaterialTheme.colorScheme.secondaryContainer
-    val fg = MaterialTheme.colorScheme.onSecondaryContainer
+    val initial = remember(name, email) { resolveAccountInitial(name, email) }
+    val colorKey = email?.takeIf { it.isNotBlank() } ?: name.orEmpty()
+    val avatarColors = rememberAvatarColors(colorKey)
 
     Surface(
         modifier = modifier.size(sizeDp.dp),
         shape = CircleShape,
-        color = bg,
-        contentColor = fg
+        color = avatarColors.background,
+        contentColor = avatarColors.content
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = initial,
-                style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
             )
         }
     }
+}
+
+private fun resolveAccountInitial(name: String?, email: String?): String {
+    val fromName = name?.let { extractInitialFromName(it) }
+    if (!fromName.isNullOrBlank()) return fromName
+
+    val fromEmail = extractInitialFromEmail(email)
+    if (!fromEmail.isNullOrBlank()) return fromEmail
+
+    return "?"
+}
+
+private fun extractInitialFromName(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+
+    val cjkChar = trimmed.reversed().firstOrNull { it.isCjkIdeograph() }
+    if (cjkChar != null) return cjkChar.toString()
+
+    // ★ 修正ポイント: "\s+" -> "\\s+" に変更（Unsupported escape sequence 対策）
+    val tokens = trimmed.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+    val target = tokens.lastOrNull() ?: trimmed
+    val letter = target.firstOrNull { it.isLetterOrDigit() }
+    return letter?.titlecaseChar()?.toString()
+}
+
+private fun extractInitialFromEmail(raw: String?): String? {
+    val trimmed = raw?.trim() ?: return null
+    if (trimmed.isEmpty()) return null
+    val localPart = trimmed.substringBefore('@')
+    val letter = localPart.firstOrNull { it.isLetterOrDigit() }
+    return letter?.titlecaseChar()?.toString()
+}
+
+private fun Char.isCjkIdeograph(): Boolean {
+    val codePoint = this.code
+    val script = Character.UnicodeScript.of(codePoint)
+    return script == Character.UnicodeScript.HAN ||
+            script == Character.UnicodeScript.HIRAGANA ||
+            script == Character.UnicodeScript.KATAKANA
 }

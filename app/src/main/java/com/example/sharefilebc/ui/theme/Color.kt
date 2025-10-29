@@ -66,3 +66,34 @@ object SharedScreenColors {
     val UserEmail = Color(0xFF8E8E93)
     val DateLabel = Color(0xFF8E8E93)
 }
+
+/* -------- Account Avatar Palettes (Googleサービスに近い配色) -------- */
+val AvatarPaletteLight = listOf(
+    Color(0xFFDB4437), // Google Red 500
+    Color(0xFFF4B400), // Google Yellow 500
+    Color(0xFF0F9D58), // Google Green 500
+    Color(0xFF4285F4), // Google Blue 500
+    Color(0xFFAB47BC), // Purple 400
+    Color(0xFF00ACC1), // Cyan 600
+    Color(0xFF5E35B1), // Deep Purple 600
+    Color(0xFFF09300), // Orange 600
+    Color(0xFF7CB342), // Light Green 600
+    Color(0xFF00897B), // Teal 600
+    Color(0xFF795548), // Brown 500
+    Color(0xFF546E7A)  // Blue Grey 600
+)
+
+val AvatarPaletteDark = listOf(
+    Color(0xFFF28B82),
+    Color(0xFFFDE293),
+    Color(0xFF81C995),
+    Color(0xFFAECBFA),
+    Color(0xFFD7AEFB),
+    Color(0xFF80DEEA),
+    Color(0xFFB39DDB),
+    Color(0xFFF6AD70),
+    Color(0xFFC5E1A5),
+    Color(0xFF8DDAD5),
+    Color(0xFFBCAAA4),
+    Color(0xFF9AA0A6)
+)
