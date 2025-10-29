@@ -2,14 +2,21 @@ package com.example.sharefilebc
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,7 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.ui.theme.SharedScreenColors
@@ -92,52 +98,70 @@ private fun SharedTabSelector(
     selectedTab: SharedInnerTab,
     onSelected: (SharedInnerTab) -> Unit
 ) {
-    Row(
+    val containerShape = RoundedCornerShape(SharedScreenDimens.TabContainerCorner)
+    val indicatorShape = RoundedCornerShape(SharedScreenDimens.TabItemCorner)
+    val tabs = SharedInnerTab.values()
+    val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(SharedScreenDimens.TabContainerCorner))
+            .clip(containerShape)
             .background(SharedScreenColors.TabUnselected.copy(alpha = 0.4f))
-            .padding(4.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(4.dp)
     ) {
-        SharedInnerTab.values().forEach { tab ->
-            val isSelected = tab == selectedTab
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp)
-                    .then(
-                        if (isSelected) {
-                            Modifier.shadow(
-                                elevation = 6.dp,
-                                shape = RoundedCornerShape(SharedScreenDimens.TabItemCorner),
-                                clip = false
-                            )
-                        } else {
-                            Modifier
-                        }
-                    )
-                    .clip(RoundedCornerShape(SharedScreenDimens.TabItemCorner))
-                    .background(
-                        color = if (isSelected) {
-                            SharedScreenColors.TabSelected
-                        } else {
-                            SharedScreenColors.TabUnselected
-                        }
-                    )
-                    .clickable { onSelected(tab) }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = tab.label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+        ) {
+            val indicatorWidth = maxWidth / tabs.size
+            val targetOffset = indicatorWidth * selectedIndex
+            val animatedOffset by animateDpAsState(
+                targetValue = targetOffset,
+                animationSpec = tween(durationMillis = 120),
+                label = "shared_tab_indicator"
+            )
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .offset(x = animatedOffset)
+                        .width(indicatorWidth)
+                        .fillMaxHeight()
+                        .clip(indicatorShape)
+                        .background(SharedScreenColors.TabSelected)
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    tabs.forEach { tab ->
+                        val isSelected = tab == selectedTab
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { onSelected(tab) }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = tab.label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
     }
