@@ -1,252 +1,558 @@
 package com.example.sharefilebc
 
 import android.content.Intent
-import android.util.Log
-import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
-import kotlinx.coroutines.flow.collectLatest
+import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.ui.theme.SharedScreenColors
 import kotlinx.coroutines.launch
 
 private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
 
 private fun String.toDateOnly(): String = DATE_REGEX.find(this)?.value ?: this
 
+private data class ReceivedDateGroupSummaryUi(
+    val dateLabel: String,
+    val folderIds: List<String>,
+    val displayUpload: String,
+    val displayDelete: String
+)
+
+private data class ReceivedSenderSummaryUi(
+    val senderName: String,
+    val senderEmail: String?,
+    val dateGroups: List<ReceivedDateGroupSummaryUi>,
+    val cacheToken: String,
+    val latestUpload: String
+)
+
+private data class ReceivedFileItemUi(
+    val id: String,
+    val fileName: String,
+    val uploadedAt: String,
+    val deleteAt: String
+)
+
+private data class ReceivedDateGroupDetailUi(
+    val dateLabel: String,
+    val deleteAt: String,
+    val files: List<ReceivedFileItemUi>
+)
+
+private data class ReceivedSenderDetailUi(
+    val senderName: String,
+    val senderEmail: String?,
+    val dateGroups: List<ReceivedDateGroupDetailUi>,
+    val cacheToken: String
+)
 
 @Composable
 fun DownloadScreen(initialFolderId: String?) {
-    val TAG = "DownloadScreen"
     val context = LocalContext.current
     val downloader = remember { DriveDownloader(context) }
     val coroutineScope = rememberCoroutineScope()
 
-    var currentFolderStructure by remember { mutableStateOf<FolderStructure?>(null) }
-    var receivedFolders by remember { mutableStateOf<List<ReceivedFolderEntity>>(emptyList()) }
+    val db = remember { AppDatabase.getDatabase(context) }
+    val receivedDao = remember { db.receivedFolderDao() }
+    val userDao = remember { db.userDao() }
+
+    val receivedFolders by receivedDao.getAll().collectAsState(initial = emptyList())
+    val users by userDao.getAll().collectAsState(initial = emptyList())
+
     var isLoading by remember { mutableStateOf(false) }
     var needsLogin by remember { mutableStateOf(false) }
+    var selectedSender by remember { mutableStateOf<String?>(null) }
+    var detailState by remember { mutableStateOf<ReceivedSenderDetailUi?>(null) }
+    val detailCache = remember { mutableStateMapOf<String, ReceivedSenderDetailUi>() }
 
-    val db = remember { AppDatabase.getDatabase(context) }
-    val dao = db.receivedFolderDao()
+    val senderGroups = remember(receivedFolders, users) {
+        buildSenderSummaries(receivedFolders, users)
+    }
 
-    // Deep Link から来た最初の取得（フォルダ単位でそのまま開く）
+    LaunchedEffect(senderGroups) {
+        if (selectedSender != null && senderGroups.none { it.senderName == selectedSender }) {
+            selectedSender = null
+            detailState = null
+        }
+    }
+
     LaunchedEffect(initialFolderId) {
-        Log.d(TAG, "🔎 LaunchedEffect: initialFolderId=$initialFolderId")
         if (initialFolderId != null) {
             isLoading = true
-            val folderStructure = downloader.getFolderStructure(initialFolderId)
-            Log.d(TAG, "📥 getFolderStructure($initialFolderId) -> ${if (folderStructure == null) "null" else "OK"}")
-
-            if (folderStructure == null) {
-                // 未認証/権限不足/その他エラー
+            val result = handleInitialFolder(initialFolderId, downloader, receivedDao)
+            isLoading = false
+            if (result == null) {
                 needsLogin = true
             } else {
-                val childFolder = folderStructure.files.firstOrNull { it.isFolder && DATE_REGEX.find(it.name) != null }
-                if (childFolder != null) {
-                    val childStructure = downloader.getFolderStructure(childFolder.id)
-                    if (childStructure == null) {
-                        needsLogin = true
-                    } else {
-                        currentFolderStructure = childStructure.copy(
-                            folderName = childStructure.folderName.toDateOnly()
-                        )
-                        val exists = dao.findByFolderId(childFolder.id)
-                    if (exists == null) {
-                        val first = childStructure.files.firstOrNull()
-                        dao.insert(
-                            ReceivedFolderEntity(
-                                folderId = childFolder.id,
-                                folderName = childStructure.folderName.toDateOnly(), // 例: yyyy-MM-dd
-                                senderName = first?.senderName ?: "Unknown Sender",
-                                uploadDateTime = first?.uploadDateTime ?: "",
-                                deleteDateTime = first?.deleteDateTime ?: "",
-                            )
-                        )
-                    }
+                selectedSender = result.senderName
+            }
+        }
+    }
+
+    LaunchedEffect(selectedSender) {
+        if (selectedSender != null) {
+            detailState = null
+        }
+    }
+
+    LaunchedEffect(selectedSender, senderGroups) {
+        val sender = selectedSender ?: return@LaunchedEffect
+        val group = senderGroups.firstOrNull { it.senderName == sender } ?: return@LaunchedEffect
+        val cached = detailCache[sender]
+        if (cached != null && cached.cacheToken == group.cacheToken) {
+            detailState = cached
+            return@LaunchedEffect
+        }
+
+        isLoading = true
+        needsLogin = false
+
+        val dateGroups = mutableListOf<ReceivedDateGroupDetailUi>()
+        for (dateGroup in group.dateGroups) {
+            val structures = mutableListOf<FolderStructure>()
+            for (folderId in dateGroup.folderIds) {
+                val structure = downloader.getFolderStructure(folderId)
+                if (structure == null) {
+                    needsLogin = true
+                    continue
+                }
+                structures += structure
+            }
+
+            if (structures.isEmpty()) continue
+
+            val mergedFiles = structures
+                .flatMap { it.files }
+                .filter { !it.isFolder }
+                .map {
+                    ReceivedFileItemUi(
+                        id = it.id,
+                        fileName = it.name,
+                        uploadedAt = it.uploadDateTime,
+                        deleteAt = it.deleteDateTime
+                    )
+                }
+                .sortedByDescending { it.uploadedAt }
+
+            if (mergedFiles.isEmpty()) continue
+
+            dateGroups += ReceivedDateGroupDetailUi(
+                dateLabel = dateGroup.dateLabel.toDateOnly(),
+                deleteAt = dateGroup.displayDelete,
+                files = mergedFiles
+            )
+        }
+
+        isLoading = false
+
+        val detail = ReceivedSenderDetailUi(
+            senderName = group.senderName,
+            senderEmail = group.senderEmail,
+            dateGroups = dateGroups.sortedByDescending { it.dateLabel },
+            cacheToken = group.cacheToken
+        )
+        detailState = detail
+        detailCache[sender] = detail
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 4.dp)
+        ) {
+            AnimatedVisibility(visible = needsLogin) {
+                LoginRequiredCard(onLogin = {
+                    context.startActivity(Intent(context, LoginActivity::class.java))
+                })
+            }
+
+            if (senderGroups.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "受信したファイルはありません",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             } else {
-                currentFolderStructure = folderStructure.copy(
-                    folderName = folderStructure.folderName.toDateOnly()
+                if (detailState == null || selectedSender == null) {
+                    ReceivedSenderList(
+                        modifier = Modifier.weight(1f),
+                        groups = senderGroups,
+                        onSelect = { selectedSender = it.senderName }
                     )
-                    val exists = dao.findByFolderId(initialFolderId)
-                    if (exists == null) {
-                        val first = folderStructure.files.firstOrNull()
-                        dao.insert(
-                            ReceivedFolderEntity(
-                                folderId = initialFolderId,
-                                folderName = folderStructure.folderName.toDateOnly(), // 例: yyyy-MM-dd
-                                senderName = first?.senderName ?: "Unknown Sender",
-                                uploadDateTime = first?.uploadDateTime ?: "",
-                                deleteDateTime = first?.deleteDateTime ?: "",
-                            )
-                        )
-                    }
+                } else {
+                    ReceivedSenderDetail(
+                        modifier = Modifier.weight(1f),
+                        detail = detailState!!,
+                        onBack = { selectedSender = null },
+                        onDownload = { fileId ->
+                            coroutineScope.launch {
+                                isLoading = true
+                                downloader.downloadFile(fileId)
+                                isLoading = false
+                            }
+                        }
+                    )
                 }
             }
-            isLoading = false
+        }
+
+        if (isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
         }
     }
+}
 
-    // 受信一覧の監視（Flow）
-    LaunchedEffect(Unit) {
-        dao.getAll().collectLatest { list ->
-            receivedFolders = list
-            Log.d(TAG, "📚 receivedFolders.size=${list.size}")
-        }
-    }
+private fun buildSenderSummaries(
+    receivedFolders: List<ReceivedFolderEntity>,
+    users: List<UserEntity>
+): List<ReceivedSenderSummaryUi> {
+    val emailMap = users.associate { it.name to it.email }
 
-    // ==== 同じ（senderName, folderName）を 1 カードに統合するための ViewModel 的変換 ====
-    data class Grouped(
-        val senderName: String,
-        val dateName: String,
-        val folderIds: List<String>,       // 同グループ内の全フォルダID
-        val displayUpload: String,         // 代表表示用（最新の uploadDateTime など）
-        val displayDelete: String          // 代表表示用（最新の deleteDateTime など）
-    )
-
-    // senderName, folderName でグループ化し、代表行を作る
-    val groupedList by remember(receivedFolders) {
-        mutableStateOf(
-            receivedFolders
-                .groupBy { it.senderName to it.folderName }
-                .map { (key, rows) ->
+    return receivedFolders
+        .groupBy { it.senderName }
+        .map { (senderName, folders) ->
+            val dateGroups = folders
+                .groupBy { it.folderName }
+                .map { (dateName, rows) ->
                     val latest = rows.maxByOrNull { it.uploadDateTime } ?: rows.first()
-                    Grouped(
-                        senderName = key.first,
-                        dateName   = key.second,
-                        folderIds  = rows.map { it.folderId },
+                    ReceivedDateGroupSummaryUi(
+                        dateLabel = dateName,
+                        folderIds = rows.map { it.folderId },
                         displayUpload = latest.uploadDateTime,
                         displayDelete = latest.deleteDateTime
                     )
                 }
-                // 新しい(表示upload)順に並べる
                 .sortedByDescending { it.displayUpload }
+
+            val cacheToken = dateGroups.joinToString(separator = "|") { group ->
+                buildString {
+                    append(group.dateLabel)
+                    append(":")
+                    append(group.folderIds.sorted().joinToString(","))
+                    append(":")
+                    append(group.displayUpload)
+                    append(":")
+                    append(group.displayDelete)
+                }
+            }
+
+            val latestUpload = dateGroups.maxOfOrNull { it.displayUpload }.orEmpty()
+
+            ReceivedSenderSummaryUi(
+                senderName = senderName,
+                senderEmail = emailMap[senderName],
+                dateGroups = dateGroups,
+                cacheToken = cacheToken,
+                latestUpload = latestUpload
+            )
+        }
+        .sortedByDescending { it.latestUpload }
+}
+
+private data class InitialFolderResult(
+    val senderName: String
+)
+
+private suspend fun handleInitialFolder(
+    folderId: String,
+    downloader: DriveDownloader,
+    dao: com.example.sharefilebc.data.ReceivedFolderDao
+): InitialFolderResult? {
+    val folderStructure = downloader.getFolderStructure(folderId) ?: return null
+
+    val dateChild = folderStructure.files.firstOrNull { it.isFolder && DATE_REGEX.find(it.name) != null }
+    val (targetId, targetStructure) = if (dateChild != null) {
+        val childStructure = downloader.getFolderStructure(dateChild.id) ?: return null
+        dateChild.id to childStructure.copy(folderName = childStructure.folderName.toDateOnly())
+    } else {
+        folderId to folderStructure.copy(folderName = folderStructure.folderName.toDateOnly())
+    }
+
+    val firstFile = targetStructure.files.firstOrNull { !it.isFolder }
+    val senderName = firstFile?.senderName ?: "Unknown Sender"
+    val upload = firstFile?.uploadDateTime ?: ""
+    val delete = firstFile?.deleteDateTime ?: ""
+
+    val exists = dao.findByFolderId(targetId)
+    if (exists == null) {
+        dao.insert(
+            ReceivedFolderEntity(
+                folderId = targetId,
+                folderName = targetStructure.folderName.toDateOnly(),
+                senderName = senderName,
+                uploadDateTime = upload,
+                deleteDateTime = delete
+            )
         )
     }
 
-    Scaffold { innerPadding ->
-        Column(
+    return InitialFolderResult(senderName = senderName)
+}
+
+@Composable
+private fun LoginRequiredCard(onLogin: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Google ログインまたは Drive 権限が必要です。",
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(onClick = onLogin, modifier = Modifier.padding(top = 8.dp)) {
+                Text("ログインへ")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceivedSenderList(
+    modifier: Modifier,
+    groups: List<ReceivedSenderSummaryUi>,
+    onSelect: (ReceivedSenderSummaryUi) -> Unit
+) {
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 96.dp)
+    ) {
+        items(groups, key = { it.senderName }) { group ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { onSelect(group) },
+                color = SharedScreenColors.UserCardBackground,
+                shape = RoundedCornerShape(16.dp),
+                tonalElevation = 0.dp,
+                shadowElevation = 2.dp,
+                border = BorderStroke(1.dp, SharedScreenColors.UserCardBorder)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = group.senderName.ifBlank { "不明なユーザー" },
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        group.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
+                            Text(
+                                text = email,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SharedScreenColors.UserEmail
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceivedSenderDetail(
+    modifier: Modifier,
+    detail: ReceivedSenderDetailUi,
+    onBack: () -> Unit,
+    onDownload: (String) -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onBack() }
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ArrowBack,
+                    contentDescription = "戻る",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "共有ファイル",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Column {
+                Text(
+                    text = detail.senderName.ifBlank { "不明なユーザー" },
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                detail.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
+                    Text(
+                        text = email,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SharedScreenColors.UserEmail
+                    )
+                }
+            }
+        }
+
+        if (detail.dateGroups.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "表示できるファイルがありません",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            return@Column
+        }
+
+        LazyColumn(
             modifier = Modifier
-                .padding(innerPadding)
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .fillMaxWidth()
+                .weight(1f),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 96.dp)
         ) {
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                    CircularProgressIndicator()
+            detail.dateGroups.forEach { group ->
+                item(key = "header-${group.dateLabel}") {
+                    Text(
+                        text = group.dateLabel,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = SharedScreenColors.DateLabel,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
                 }
-                return@Column
-            }
-
-            // 取得失敗時の導線
-            if (needsLogin) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Google ログインまたは Drive 権限が必要です。")
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = {
-                            context.startActivity(Intent(context, LoginActivity::class.java))
-                        }) {
-                            Text("ログインへ")
-                        }
-                    }
+                items(group.files, key = { it.id }) { file ->
+                    ReceivedFileItem(
+                        file = file,
+                        onDownload = onDownload
+                    )
                 }
             }
+        }
+    }
+}
 
-            // 現在フォルダを開いている場合
-            currentFolderStructure?.let { opened ->
-                Button(
-                    onClick = { currentFolderStructure = null },
-                    modifier = Modifier.padding(bottom = 8.dp)
-                ) {
-                    Text("← 受信フォルダ一覧に戻る")
-                }
-                FileListScreen(opened) // フォルダ内の階層は従来通り掘れる
-                return@Column
+@Composable
+private fun ReceivedFileItem(
+    file: ReceivedFileItemUi,
+    onDownload: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(SharedScreenColors.UserCardBackground)
+            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = file.fileName,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            if (file.deleteAt.isNotBlank()) {
+                Text(
+                    text = "削除予定: ${file.deleteAt}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Medium
+                )
             }
-
-            // === ここから “フォルダ単位 + 重複統合” の一覧 ===
-            Text("受信したフォルダ", style = MaterialTheme.typography.titleLarge)
-
-            if (groupedList.isEmpty()) {
-                Text("受信したフォルダがありません。")
-            } else {
-                LazyColumn(contentPadding = PaddingValues(bottom = 80.dp)) {
-                    items(groupedList, key = { it.senderName + "|" + it.dateName }) { group ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clickable {
-                                    // ★ 同じ（sender, date）の複数フォルダを「開く時に」マージする
-                                    coroutineScope.launch {
-                                        isLoading = true
-                                        val structures = group.folderIds.mapNotNull { fid ->
-                                            downloader.getFolderStructure(fid)
-                                        }
-                                        isLoading = false
-                                        if (structures.isEmpty()) {
-                                            Toast.makeText(
-                                                context,
-                                                "フォルダを開けませんでした。権限またはネットワークをご確認ください。",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                        } else {
-                                            // 1つしかなければそれ、複数なら中身をマージして1画面に集約
-                                            val merged = if (structures.size == 1) {
-                                                structures.first()
-                                            } else {
-                                                FolderStructure(
-                                                    folderName = group.dateName,
-                                                    files = structures.flatMap { it.files }
-                                                )
-                                            }
-                                            currentFolderStructure = merged
-                                        }
-                                    }
-                                },
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text("📁 ${group.dateName.toDateOnly()}", style = MaterialTheme.typography.titleMedium)
-                                if (group.senderName.isNotBlank()) {
-                                    Text("👤 ${group.senderName}", style = MaterialTheme.typography.bodyMedium)
-                                }
-                                if (group.displayUpload.isNotBlank()) {
-                                    Text("⏱ ${group.displayUpload}", style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (group.displayDelete.isNotBlank()) {
-                                    Text(
-                                        "🗑 ${group.displayDelete} に削除予定",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                }
-                                // 必要なら「同日フォルダが N 件あります」表示
-                                if (group.folderIds.size > 1) {
-                                    Text(
-                                        "（同日の共有が ${group.folderIds.size} 件あります）",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        }
+        IconButton(onClick = { onDownload(file.id) }) {
+            Icon(
+                imageVector = Icons.Outlined.Download,
+                contentDescription = "ダウンロード",
+                tint = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }
