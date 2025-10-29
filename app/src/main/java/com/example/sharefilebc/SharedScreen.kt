@@ -25,6 +25,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.ui.theme.SharedScreenColors
+import com.example.sharefilebc.ui.theme.SharedScreenDimens
 
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
@@ -94,7 +95,7 @@ private fun SharedTabSelector(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(SharedScreenDimens.TabContainerCorner))
             .background(SharedScreenColors.TabUnselected.copy(alpha = 0.4f))
             .padding(4.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -109,14 +110,14 @@ private fun SharedTabSelector(
                         if (isSelected) {
                             Modifier.shadow(
                                 elevation = 6.dp,
-                                shape = RoundedCornerShape(20.dp),
+                                shape = RoundedCornerShape(SharedScreenDimens.TabItemCorner),
                                 clip = false
                             )
                         } else {
                             Modifier
                         }
                     )
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(SharedScreenDimens.TabItemCorner))
                     .background(
                         color = if (isSelected) {
                             SharedScreenColors.TabSelected
