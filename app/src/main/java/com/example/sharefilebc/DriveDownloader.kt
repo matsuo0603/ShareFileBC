@@ -22,7 +22,7 @@ import java.util.*
 class DriveDownloader(private val context: Context) {
 
     // 表示用期限：アップロードから7日
-    private val EXPIRATION_MILLIS: Long = 7L * 24 * 60 * 60 * 1000
+    private val expirationMillis: Long = 7L * 24 * 60 * 60 * 1000
 
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
@@ -45,17 +45,39 @@ class DriveDownloader(private val context: Context) {
                 val driveService = getDriveService() ?: return@withContext null
 
                 val folderInfo = driveService.files().get(folderId)
-                    .setFields("id, name, parents")
+                    .setFields("id, name, parents, owners(displayName, emailAddress)")
                     .execute()
 
                 val parentFolderId = folderInfo.parents?.firstOrNull()
-                val parentFolderName = parentFolderId?.let {
-                    driveService.files().get(it).setFields("name").execute().name
-                } ?: "Unknown Sender"
+                val parentFolderInfo = parentFolderId?.let {
+                    driveService.files().get(it)
+                        .setFields("name, owners(displayName, emailAddress)")
+                        .execute()
+                }
+
+                val folderOwner = folderInfo.owners?.firstOrNull()
+                val folderOwnerName = folderOwner?.displayName?.takeIf(String::isNotBlank)
+                val folderOwnerEmail = folderOwner?.emailAddress?.takeIf(String::isNotBlank)
+
+                val parentOwner = parentFolderInfo?.owners?.firstOrNull()
+                val parentOwnerName = parentOwner?.displayName?.takeIf(String::isNotBlank)
+                val parentOwnerEmail = parentOwner?.emailAddress?.takeIf(String::isNotBlank)
+
+                val parentNameValue = parentFolderInfo?.name
+                val parentNameFallback = parentNameValue?.takeIf(String::isNotBlank)
+
+                val fallbackSenderName = when {
+                    folderOwnerName != null -> folderOwnerName
+                    parentOwnerName != null -> parentOwnerName
+                    folderOwnerEmail != null -> folderOwnerEmail
+                    parentOwnerEmail != null -> parentOwnerEmail
+                    parentNameFallback != null -> parentNameFallback
+                    else -> "Unknown Sender"
+                }
 
                 val fileList = driveService.files().list()
                     .setQ("'$folderId' in parents and trashed = false")
-                    .setFields("files(id, name, mimeType, createdTime)")
+                    .setFields("files(id, name, mimeType, createdTime, owners(displayName, emailAddress))")
                     .execute()
 
                 val jst = TimeZone.getTimeZone("Asia/Tokyo")
@@ -68,21 +90,25 @@ class DriveDownloader(private val context: Context) {
                     val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
                     val uploadDate = Date(uploadMillis)
                     val uploadStr = fullFormatter.format(uploadDate)
-                    val deleteStr = fullFormatter.format(Date(uploadMillis + EXPIRATION_MILLIS))
+                    val deleteStr = fullFormatter.format(Date(uploadMillis + expirationMillis))
+                    val owner = file.owners?.firstOrNull()
+                    val ownerDisplayName = owner?.displayName?.takeIf(String::isNotBlank)
+                    val ownerEmail = owner?.emailAddress?.takeIf(String::isNotBlank)
 
                     DriveFileInfo(
                         id = file.id,
                         name = file.name,
                         mimeType = file.mimeType,
                         isFolder = isFolder,
-                        senderName = if (isFolder) "" else parentFolderName,
+                        senderName = if (isFolder) "" else (
+                                ownerDisplayName ?: ownerEmail ?: fallbackSenderName
+                                ),
                         uploadDateTime = if (isFolder) "" else uploadStr,
                         deleteDateTime = if (isFolder) "" else deleteStr
                     )
                 } ?: emptyList()
 
                 val folderName = folderInfo.name ?: "Unknown Date"
-
 
                 FolderStructure(
                     folderName = folderName,
@@ -91,7 +117,11 @@ class DriveDownloader(private val context: Context) {
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "Error getting folder structure", e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "フォルダ情報の取得に失敗しました: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        context,
+                        "フォルダ情報の取得に失敗しました: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
                 null
             }
@@ -103,20 +133,34 @@ class DriveDownloader(private val context: Context) {
             try {
                 val driveService = getDriveService() ?: return@withContext null
                 val fileMetadata = driveService.files().get(fileId).execute()
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+
+                val downloadsDir =
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val outputFile = java.io.File(downloadsDir, fileMetadata.name)
+
                 FileOutputStream(outputFile).use {
                     driveService.files().get(fileId).executeMediaAndDownloadTo(it)
                 }
+
                 MediaScannerConnection.scanFile(context, arrayOf(outputFile.absolutePath), null, null)
+
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "${fileMetadata.name} をダウンロードしました。", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        context,
+                        "${fileMetadata.name} をダウンロードしました。",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
+
                 outputFile
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "❌ ダウンロードエラー", e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "ダウンロードに失敗しました: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        context,
+                        "ダウンロードに失敗しました: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
                 null
             }

@@ -303,21 +303,28 @@ private suspend fun handleInitialFolder(
     }
 
     val firstFile = targetStructure.files.firstOrNull { !it.isFolder }
-    val senderName = firstFile?.senderName ?: "Unknown Sender"
+    val senderName = firstFile?.senderName?.takeIf { it.isNotBlank() } ?: "Unknown Sender"
     val upload = firstFile?.uploadDateTime ?: ""
     val delete = firstFile?.deleteDateTime ?: ""
 
     val exists = dao.findByFolderId(targetId)
+    val entity = ReceivedFolderEntity(
+        folderId = targetId,
+        folderName = targetStructure.folderName.toDateOnly(),
+        senderName = senderName,
+        uploadDateTime = upload,
+        deleteDateTime = delete
+    )
+
     if (exists == null) {
-        dao.insert(
-            ReceivedFolderEntity(
-                folderId = targetId,
-                folderName = targetStructure.folderName.toDateOnly(),
-                senderName = senderName,
-                uploadDateTime = upload,
-                deleteDateTime = delete
-            )
-        )
+        dao.insert(entity)
+    } else if (
+        exists.senderName != entity.senderName ||
+        exists.folderName != entity.folderName ||
+        exists.uploadDateTime != entity.uploadDateTime ||
+        exists.deleteDateTime != entity.deleteDateTime
+    ) {
+        dao.insert(entity.copy(id = exists.id))
     }
 
     return InitialFolderResult(senderName = senderName)
