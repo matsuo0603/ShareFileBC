@@ -8,7 +8,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -47,8 +50,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,10 +63,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.rememberAvatarColors
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.Dispatchers
@@ -149,27 +152,7 @@ fun HomeScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.surface,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                ),
-                title = {
-                    Text(
-                        text = "ShareFileBC",
-                        style = MaterialTheme.typography.headlineLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                    )
-                },
-                actions = {
-                    AccountInitialAvatar(
-                        name = accountName,
-                        email = accountEmail
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-            )
-        },
+        topBar = {},
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { showAddDialog = true },
@@ -189,6 +172,31 @@ fun HomeScreen(
                 .background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
+            // ★ ここを Row にして同じ高さに並べる
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                BalanceVisibilityButton(
+                    modifier = Modifier,
+                    onClick = {
+                        Toast.makeText(
+                            context,
+                            "残高を表示ボタンをタップしました",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+                AccountInitialAvatar(
+                    name = accountName,
+                    email = accountEmail
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            // ↓このあと isUploading の if が続く
+
             if (isUploading) {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -282,6 +290,40 @@ fun HomeScreen(
         )
     }
 }
+
+@Composable
+private fun BalanceVisibilityButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val backgroundColor = if (isSystemInDarkTheme()) {
+        HomeScreenButtonColors.BalanceButtonBackgroundDark
+    } else {
+        HomeScreenButtonColors.BalanceButtonBackgroundLight
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(32.dp))
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Visibility,
+            contentDescription = "残高を表示",
+            tint = HomeScreenButtonColors.BalanceButtonContent
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "残高を表示",
+            color = HomeScreenButtonColors.BalanceButtonContent,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+        )
+    }
+}
+
 
 /* =========================================================
  * 左スワイプで削除(赤)/共有(青)
@@ -416,7 +458,7 @@ private fun AccountInitialAvatar(
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = initial,
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
             )
         }
     }
