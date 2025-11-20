@@ -67,6 +67,13 @@ object SharedScreenColors {
     val DateLabel = Color(0xFF8E8E93)
 }
 
+/* -------- Home Screen Controls -------- */
+object HomeScreenButtonColors {
+    val BalanceButtonBackgroundLight = Color(0xFFE5E5EA)
+    val BalanceButtonBackgroundDark = Color(0xFF3A3A3C)
+    val BalanceButtonContent = Color(0xFF000000)
+}
+
 /* -------- Account Avatar Palettes (Googleサービスに近い配色) -------- */
 val AvatarPaletteLight = listOf(
     Color(0xFFDB4437), // Google Red 500
