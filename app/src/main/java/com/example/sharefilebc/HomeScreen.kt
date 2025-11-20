@@ -76,6 +76,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import androidx.compose.material.icons.outlined.VisibilityOff
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -106,7 +107,7 @@ fun HomeScreen(
     val account = remember { GoogleSignIn.getLastSignedInAccount(context) }
     val accountName = account?.displayName
     val accountEmail = account?.email
-
+    var isBalanceVisible by remember { mutableStateOf(false) }
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
     val openFileLauncher = rememberLauncherForActivityResult(
         contract = FilePickerContract(),
@@ -180,17 +181,26 @@ fun HomeScreen(
             ) {
                 BalanceVisibilityButton(
                     modifier = Modifier,
+                    isVisible = isBalanceVisible,
                     onClick = {
-                        Toast.makeText(
-                            context,
-                            "残高を表示ボタンをタップしました",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        isBalanceVisible = !isBalanceVisible
                     }
                 )
                 AccountInitialAvatar(
                     name = accountName,
                     email = accountEmail
+                )
+            }
+
+            if (isBalanceVisible) {
+                Spacer(Modifier.height(16.dp))
+                // 数値はアプリ統合後に連携先から受け取ることを想定
+                BalanceSummaryCard(
+                    balanceTitle = "Balance",
+                    primaryAmount = "0",
+                    primaryUnit = "Token",
+                    secondaryAmount = "0.00000000",
+                    secondaryUnit = "TPC"
                 )
             }
 
@@ -294,6 +304,7 @@ fun HomeScreen(
 @Composable
 private fun BalanceVisibilityButton(
     modifier: Modifier = Modifier,
+    isVisible: Boolean,
     onClick: () -> Unit
 ) {
     val backgroundColor = if (isSystemInDarkTheme()) {
@@ -301,6 +312,10 @@ private fun BalanceVisibilityButton(
     } else {
         HomeScreenButtonColors.BalanceButtonBackgroundLight
     }
+
+    val (icon, label) =
+        if (isVisible) Icons.Outlined.VisibilityOff to "残高を非表示"
+        else Icons.Outlined.Visibility to "残高を表示"
 
     Row(
         modifier = modifier
@@ -311,16 +326,69 @@ private fun BalanceVisibilityButton(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = Icons.Outlined.Visibility,
-            contentDescription = "残高を表示",
+            imageVector = icon,
+            contentDescription = label,
             tint = HomeScreenButtonColors.BalanceButtonContent
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = "残高を表示",
+            text = label,
             color = HomeScreenButtonColors.BalanceButtonContent,
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
         )
+    }
+}
+
+@Composable
+private fun BalanceSummaryCard(
+    balanceTitle: String,
+    primaryAmount: String,
+    primaryUnit: String,
+    secondaryAmount: String,
+    secondaryUnit: String,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = balanceTitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = primaryAmount,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = primaryUnit,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Text(
+                text = "$secondaryAmount  $secondaryUnit",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
