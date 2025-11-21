@@ -68,8 +68,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
-import com.example.sharefilebc.ui.AccountAvatar
-import com.example.sharefilebc.ui.AccountScreen
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
