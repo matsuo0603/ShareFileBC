@@ -2,6 +2,8 @@
 
 package com.example.sharefilebc
 
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,7 +26,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -47,7 +49,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -65,18 +66,20 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.ui.AccountAvatar
+import com.example.sharefilebc.ui.AccountScreen
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
-import com.example.sharefilebc.ui.theme.rememberAvatarColors
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.Scope
+import com.google.api.services.drive.DriveScopes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import androidx.compose.material.icons.outlined.VisibilityOff
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -97,7 +100,9 @@ fun HomeScreen(
 
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
     var isUploading by remember { mutableStateOf(false) }
-
+    var showAccountScreen by remember { mutableStateOf(false) }
+    var tokenThreshold by remember { mutableStateOf(1) }
+    var sendFee by remember { mutableStateOf(1) }
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
@@ -107,6 +112,20 @@ fun HomeScreen(
     val account = remember { GoogleSignIn.getLastSignedInAccount(context) }
     val accountName = account?.displayName
     val accountEmail = account?.email
+    val googleSignInClient = remember {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestScopes(Scope(DriveScopes.DRIVE))
+            .build()
+        GoogleSignIn.getClient(context, gso)
+    }
+    val signOutAndNavigate: () -> Unit = {
+        googleSignInClient.signOut().addOnCompleteListener {
+            val intent = Intent(context, LoginActivity::class.java)
+            context.startActivity(intent)
+            (context as? Activity)?.finish()
+        }
+    }
     var isBalanceVisible by remember { mutableStateOf(false) }
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
     val openFileLauncher = rememberLauncherForActivityResult(
@@ -186,9 +205,10 @@ fun HomeScreen(
                         isBalanceVisible = !isBalanceVisible
                     }
                 )
-                AccountInitialAvatar(
+                AccountAvatar(
                     name = accountName,
-                    email = accountEmail
+                    email = accountEmail,
+                    modifier = Modifier.clickable { showAccountScreen = true }
                 )
             }
 
@@ -249,6 +269,19 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showAccountScreen) {
+        AccountScreen(
+            name = accountName,
+            email = accountEmail,
+            tokenThreshold = tokenThreshold,
+            sendFee = sendFee,
+            onClose = { showAccountScreen = false },
+            onTokenThresholdChange = { tokenThreshold = it },
+            onSendFeeChange = { sendFee = it },
+            onSignOutConfirmed = signOutAndNavigate
+        )
     }
 
     if (showAddDialog) {
@@ -503,71 +536,4 @@ private fun SwipeRevealUserRow(
             }
         }
     }
-}
-
-/* ---------------- 右上：頭文字アバター ---------------- */
-@Composable
-private fun AccountInitialAvatar(
-    name: String?,
-    email: String?,
-    modifier: Modifier = Modifier,
-    sizeDp: Int = 40
-) {
-    val initial = remember(name, email) { resolveAccountInitial(name, email) }
-    val colorKey = email?.takeIf { it.isNotBlank() } ?: name.orEmpty()
-    val avatarColors = rememberAvatarColors(colorKey)
-
-    Surface(
-        modifier = modifier.size(sizeDp.dp),
-        shape = CircleShape,
-        color = avatarColors.background,
-        contentColor = avatarColors.content
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = initial,
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            )
-        }
-    }
-}
-
-private fun resolveAccountInitial(name: String?, email: String?): String {
-    val fromName = name?.let { extractInitialFromName(it) }
-    if (!fromName.isNullOrBlank()) return fromName
-
-    val fromEmail = extractInitialFromEmail(email)
-    if (!fromEmail.isNullOrBlank()) return fromEmail
-
-    return "?"
-}
-
-private fun extractInitialFromName(raw: String): String? {
-    val trimmed = raw.trim()
-    if (trimmed.isEmpty()) return null
-
-    val cjkChar = trimmed.reversed().firstOrNull { it.isCjkIdeograph() }
-    if (cjkChar != null) return cjkChar.toString()
-
-    // ★ 修正ポイント: "\s+" -> "\\s+" に変更（Unsupported escape sequence 対策）
-    val tokens = trimmed.split("\\s+".toRegex()).filter { it.isNotEmpty() }
-    val target = tokens.lastOrNull() ?: trimmed
-    val letter = target.firstOrNull { it.isLetterOrDigit() }
-    return letter?.titlecaseChar()?.toString()
-}
-
-private fun extractInitialFromEmail(raw: String?): String? {
-    val trimmed = raw?.trim() ?: return null
-    if (trimmed.isEmpty()) return null
-    val localPart = trimmed.substringBefore('@')
-    val letter = localPart.firstOrNull { it.isLetterOrDigit() }
-    return letter?.titlecaseChar()?.toString()
-}
-
-private fun Char.isCjkIdeograph(): Boolean {
-    val codePoint = this.code
-    val script = Character.UnicodeScript.of(codePoint)
-    return script == Character.UnicodeScript.HAN ||
-            script == Character.UnicodeScript.HIRAGANA ||
-            script == Character.UnicodeScript.KATAKANA
 }
