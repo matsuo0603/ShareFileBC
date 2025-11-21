@@ -1,8 +1,9 @@
-package com.example.sharefilebc.ui
+package com.example.sharefilebc
 
-import android.widget.NumberPicker
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,14 +24,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,12 +42,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.sharefilebc.ui.theme.ModalOverlay
+import com.example.sharefilebc.ui.theme.PureWhite
 import com.example.sharefilebc.ui.theme.rememberAvatarColors
+import kotlin.math.abs
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountScreen(
     name: String?,
@@ -192,7 +194,7 @@ fun AccountScreen(
 
                     TokenSettingRow(
                         title = "トークン閾値",
-                        value = "$tokenThreshold 1 TPC".replace("1 1", "1"),
+                        value = "$tokenThreshold TPC",
                         onClick = { showThresholdPicker = true }
                     )
 
@@ -200,7 +202,7 @@ fun AccountScreen(
 
                     TokenSettingRow(
                         title = "送金量",
-                        value = "$sendFee 1 TPC".replace("1 1", "1"),
+                        value = "$sendFee TPC",
                         onClick = { showSendFeePicker = true }
                     )
                 }
@@ -462,7 +464,7 @@ private fun PublicKeyListDialog(onClose: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NumberPickerSheet(
     title: String,
@@ -472,55 +474,130 @@ private fun NumberPickerSheet(
     onConfirm: (Int) -> Unit
 ) {
     var currentValue by remember { mutableStateOf(initialValue.coerceIn(range)) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val values = remember(range) { range.toList() }
+    val pickerHeight = 200.dp
+    val itemHeight = 48.dp
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = values.indexOf(currentValue))
+    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
 
-    ModalBottomSheet(
+    Dialog(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = accountCardBackground()
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Column(
+        // ★ 背景：アカウントページの上に半透明黒で重ねる
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .fillMaxSize()
+                .background(ModalOverlay),
+            contentAlignment = Alignment.Center
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = PureWhite),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
-                TextButton(onClick = onDismiss) { Text("キャンセル") }
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Black,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = { onConfirm(currentValue) }) { Text("完了") }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            AndroidView(
-                modifier = Modifier.fillMaxWidth(),
-                factory = { context ->
-                    NumberPicker(context).apply {
-                        minValue = range.first
-                        maxValue = range.last
-                        value = currentValue
-                        wrapSelectorWheel = false
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onDismiss) {
+                            Text("キャンセル", color = MaterialTheme.colorScheme.primary)
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                        TextButton(onClick = { onConfirm(currentValue) }) {
+                            Text("完了", color = MaterialTheme.colorScheme.primary)
+                        }
                     }
-                },
-                update = { picker ->
-                    picker.value = currentValue
-                    picker.setOnValueChangedListener { _, _, newVal ->
-                        currentValue = newVal
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Black
+                        ),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(pickerHeight)
+                    ) {
+                        LazyColumn(
+                            state = listState,
+                            flingBehavior = flingBehavior,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.Center),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                vertical = (pickerHeight - itemHeight) / 2
+                            )
+                        ) {
+                            items(values.size) { index ->
+                                val distance = abs(values[index] - currentValue)
+                                val alpha = when (distance) {
+                                    0 -> 1f
+                                    1 -> 0.5f
+                                    else -> 0.3f
+                                }
+
+                                Text(
+                                    text = values[index].toString(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(itemHeight),
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                                    fontSize = 22.sp,
+                                    fontWeight = if (distance == 0) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        // 中央の選択行ハイライト
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .fillMaxWidth()
+                                .height(itemHeight)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                                )
+                        )
+                    }
+
+                    // スクロール位置から currentValue を更新
+                    LaunchedEffect(
+                        listState.firstVisibleItemIndex,
+                        listState.firstVisibleItemScrollOffset
+                    ) {
+                        val viewportHeight =
+                            listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+                        if (viewportHeight <= 0) return@LaunchedEffect
+                        val center =
+                            listState.layoutInfo.viewportStartOffset + viewportHeight / 2
+                        val closest = listState.layoutInfo.visibleItemsInfo.minByOrNull { item ->
+                            val itemCenter = item.offset + item.size / 2
+                            abs(itemCenter - center)
+                        }
+                        closest?.let { currentValue = values[it.index] }
                     }
                 }
-            )
+            }
         }
     }
 }
@@ -530,7 +607,7 @@ private fun SignOutConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    // カスタムダイアログ：左右に余白を持たせて中央寄せ
+    // 背景：半透明黒、中央カード：白
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -538,14 +615,14 @@ private fun SignOutConfirmDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0x66000000)),
+                .background(ModalOverlay),
             contentAlignment = Alignment.Center
         ) {
             Card(
                 modifier = Modifier.padding(horizontal = 32.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFFE5F0FF)
+                    containerColor = PureWhite
                 )
             ) {
                 Column(
