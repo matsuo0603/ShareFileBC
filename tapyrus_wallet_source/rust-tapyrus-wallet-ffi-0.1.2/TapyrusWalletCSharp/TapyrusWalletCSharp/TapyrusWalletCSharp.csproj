@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier> 
+
+	  <!-- Versioning -->
+	  <Version>0.1.2</Version>
+	  <FileVersion>0.1.9.0</FileVersion>
+	  <AssemblyVersion>0.1.9.0</AssemblyVersion>
+
+	  <!-- License and Copyright -->
+	  <PackageLicenseExpression>MIT</PackageLicenseExpression>
+	  <Company>Chaintope Inc.</Company>
+	  <Copyright>(c) 2024 Chaintope Inc.</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TapyrusWalletCSharp.Tests" />
+    <PackageReference Include="System.Runtime.InteropServices" Version="4.3.0" />
+  </ItemGroup>
+</Project>
