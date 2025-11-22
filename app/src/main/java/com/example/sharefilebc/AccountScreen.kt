@@ -48,6 +48,7 @@ import com.example.sharefilebc.ui.theme.ModalOverlay
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.example.sharefilebc.ui.theme.rememberAvatarColors
 import kotlin.math.abs
+import com.example.sharefilebc.ui.theme.IosGroupedBG
 
 @Composable
 fun AccountScreen(
@@ -294,21 +295,13 @@ fun AccountScreen(
 @Composable
 private fun accountScreenBackground(): Color {
     val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        MaterialTheme.colorScheme.background
-    } else {
-        Color(0xFFF2F2F7) // iOS風の薄いグレー
-    }
+    return if (isDark) MaterialTheme.colorScheme.background else IosGroupedBG
 }
 
 @Composable
 private fun accountCardBackground(): Color {
     val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        MaterialTheme.colorScheme.surface
-    } else {
-        Color.White
-    }
+    return if (isDark) MaterialTheme.colorScheme.surface else PureWhite
 }
 
 @Composable
@@ -496,8 +489,11 @@ private fun NumberPickerSheet(
                     .fillMaxWidth()
                     .padding(horizontal = 32.dp),
                 shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = PureWhite),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                colors = CardDefaults.cardColors(
+                    containerColor = PureWhite,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(
                     modifier = Modifier
@@ -547,23 +543,28 @@ private fun NumberPickerSheet(
                             )
                         ) {
                             items(values.size) { index ->
-                                val distance = abs(values[index] - currentValue)
+                                val itemValue = values[index]
+                                val distance = abs(itemValue - currentValue)
                                 val alpha = when (distance) {
                                     0 -> 1f
                                     1 -> 0.5f
                                     else -> 0.3f
                                 }
 
-                                Text(
-                                    text = values[index].toString(),
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(itemHeight),
-                                    textAlign = TextAlign.Center,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                                    fontSize = 22.sp,
-                                    fontWeight = if (distance == 0) FontWeight.Bold else FontWeight.Medium
-                                )
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = itemValue.toString(),
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                                        fontSize = 22.sp,
+                                        fontWeight = if (distance == 0) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
                             }
                         }
 

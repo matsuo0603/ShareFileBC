@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
+import com.example.sharefilebc.ui.theme.PureWhite
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
@@ -81,9 +82,6 @@ import kotlin.math.abs
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
- * - 背景は白で統一
- * - 右上にGoogleアカウントの頭文字アバターを表示
- * - 各行を左スワイプすると「削除(赤)」「共有(青)」ボタンを表示
  */
 @Composable
 fun HomeScreen(
@@ -126,6 +124,7 @@ fun HomeScreen(
     }
     var isBalanceVisible by remember { mutableStateOf(false) }
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
+
     val openFileLauncher = rememberLauncherForActivityResult(
         contract = FilePickerContract(),
         onResult = { uri: Uri? ->
@@ -190,7 +189,7 @@ fun HomeScreen(
                 .background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // ★ ここを Row にして同じ高さに並べる
+            // アバターと「残高を表示」ボタンを同じ高さに
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -199,20 +198,25 @@ fun HomeScreen(
                 BalanceVisibilityButton(
                     modifier = Modifier,
                     isVisible = isBalanceVisible,
-                    onClick = {
-                        isBalanceVisible = !isBalanceVisible
-                    }
+                    onClick = { isBalanceVisible = !isBalanceVisible }
                 )
-                AccountAvatar(
-                    name = accountName,
-                    email = accountEmail,
-                    modifier = Modifier.clickable { showAccountScreen = true }
-                )
+
+                // クリック領域も丸くする
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable { showAccountScreen = true }
+                ) {
+                    AccountAvatar(
+                        name = accountName,
+                        email = accountEmail,
+                        modifier = Modifier
+                    )
+                }
             }
 
             if (isBalanceVisible) {
                 Spacer(Modifier.height(16.dp))
-                // 数値はアプリ統合後に連携先から受け取ることを想定
                 BalanceSummaryCard(
                     balanceTitle = "Balance",
                     primaryAmount = "0",
@@ -223,7 +227,6 @@ fun HomeScreen(
             }
 
             Spacer(Modifier.height(16.dp))
-            // ↓このあと isUploading の if が続く
 
             if (isUploading) {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -318,7 +321,8 @@ fun HomeScreen(
                             )
                             scope.launch {
                                 withContext(Dispatchers.IO) { userDao.insert(entity) }
-                                addName = ""; addEmail = ""
+                                addName = ""
+                                addEmail = ""
                                 showAddDialog = false
                                 snackbarHostState.showSnackbar("登録が完了しました")
                             }
@@ -327,7 +331,13 @@ fun HomeScreen(
                 ) { Text("登録") }
             },
             shape = RoundedCornerShape(24.dp),
-            containerColor = MaterialTheme.colorScheme.surface
+
+            // Material3 AlertDialog は colors パラメータを持たないので、
+            // 個別プロパティで色を指定する
+            containerColor = PureWhite,
+            iconContentColor = MaterialTheme.colorScheme.onSurface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -423,7 +433,6 @@ private fun BalanceSummaryCard(
     }
 }
 
-
 /* =========================================================
  * 左スワイプで削除(赤)/共有(青)
  * ========================================================= */
@@ -508,7 +517,7 @@ private fun SwipeRevealUserRow(
                         },
                         onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(180)) } }
                     ) { change: PointerInputChange, dragAmount: Float ->
-                        change.consume()
+                        // change.consume() は不要なので削除
                         val newX = (offsetX.value + dragAmount).coerceIn(-actionWidthPx, 0f)
                         scope.launch { offsetX.snapTo(newX) }
                     }
