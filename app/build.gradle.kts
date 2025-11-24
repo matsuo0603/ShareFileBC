@@ -58,6 +58,8 @@ android {
 
 dependencies {
     implementation("com.jakewharton.threetenabp:threetenabp:1.4.5")
+    implementation("com.chaintope.tapyrus.wallet:tapyrus-wallet-android:0.1.2")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
     //Room
     implementation(libs.androidx.room.runtime)
