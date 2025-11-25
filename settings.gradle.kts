@@ -20,12 +20,12 @@ dependencyResolutionManagement {
         // Maven Centralのミラー
         maven { url = uri("https://repo1.maven.org/maven2/") }
 
-        // 🔽 ここを新しく追加：Tapyrus Wallet の GitHub Packages
+        // 🔽 Tapyrus Wallet の GitHub Packages
         maven {
             url = uri("https://maven.pkg.github.com/chaintope/rust-tapyrus-wallet-ffi")
             credentials {
-                username = providers.gradleProperty("gpr.user").getOrElse("")
-                password = providers.gradleProperty("gpr.key").getOrElse("")
+                username = System.getenv("GITHUB_USER") ?: ""
+                password = System.getenv("GITHUB_TOKEN") ?: ""
             }
         }
     }

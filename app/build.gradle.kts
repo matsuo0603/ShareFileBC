@@ -40,15 +40,22 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // ★ここで重複するMETA-INF系ファイルを全部除外する
     packaging {
         resources {
-            excludes += "/META-INF/DEPENDENCIES"
-            excludes += "/META-INF/LICENSE"
-            excludes += "/META-INF/LICENSE.txt"
-            excludes += "/META-INF/NOTICE"
-            excludes += "/META-INF/NOTICE.txt"
+            // さっきの DEPENDENCIES 問題
+            excludes += "META-INF/DEPENDENCIES"
+            excludes += "META-INF/LICENSE"
+            excludes += "META-INF/LICENSE.txt"
+            excludes += "META-INF/NOTICE"
+            excludes += "META-INF/NOTICE.txt"
+
+            // 今回の bcprov / jspecify の衝突
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
     }
+
     applicationVariants.all {
         kotlin.sourceSets.getByName(name) {
             kotlin.srcDir("build/generated/ksp/$name/kotlin/")
@@ -81,17 +88,15 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // HomeScreen.ktで使用されている重要なCompose依存関係
+    // HomeScreen.kt などで使っているCompose系
     implementation("androidx.activity:activity-compose:1.8.0")
     implementation("androidx.compose.foundation:foundation-layout")
-
-    // ViewModel Compose統合 - 追加
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
-    // Google サインイン - 統合版
+    // Google サインイン
     implementation("com.google.android.gms:play-services-auth:20.7.0")
 
-    // Google API Client - 統一
+    // Google API Client
     implementation("com.google.api-client:google-api-client-android:2.2.0")
     implementation("com.google.http-client:google-http-client-gson:1.43.3")
     implementation("com.google.oauth-client:google-oauth-client-jetty:1.34.1")
@@ -99,10 +104,10 @@ dependencies {
     // Google Drive API
     implementation("com.google.apis:google-api-services-drive:v3-rev20230822-2.0.0")
 
-    // Gmail API - 重複削除して統一
+    // Gmail API
     implementation("com.google.apis:google-api-services-gmail:v1-rev20220404-2.0.0")
 
-    // JavaMail API - Gmail送信に必要
+    // JavaMail API - Gmail送信用
     implementation("com.sun.mail:javax.mail:1.6.2")
 
     // AndroidX

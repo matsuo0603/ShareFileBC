@@ -7,7 +7,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.*
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.padding
@@ -26,6 +26,17 @@ class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 🔐 マスター鍵(xprv)の生成・取得（今回は秘密鍵/公開鍵機能だけ。ウォレット機能は後で）
+        try {
+            val keyManager = KeyManager.getInstance(applicationContext)
+            val xprv = keyManager.getOrCreateMasterXprv()
+            // セキュリティ的にフル出力は危険なので、デバッグ用に先頭だけログに出す
+            val preview = if (xprv.length > 16) xprv.take(16) + "..." else xprv
+            Log.d(TAG, "Tapyrus master xprv (preview) = $preview")
+        } catch (e: Exception) {
+            Log.e(TAG, "Tapyrus getOrCreateMasterXprv error", e)
+        }
+
         val deepLinkUri: Uri? = intent?.data
 
         // HomeActivity に戻ってくる際に folderId を extra で受ける（OS差/端末差で data 欠落の対策）
@@ -42,7 +53,10 @@ class HomeActivity : ComponentActivity() {
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
         Log.d(TAG, "🟩 onCreate - Intent data: $deepLinkUri")
-        Log.d(TAG, "🟩 onCreate - folderId(extra=$folderIdFromExtra, path=$folderIdFromPath, query=$folderIdFromQuery) -> PICKED: $folderIdFromLink")
+        Log.d(
+            TAG,
+            "🟩 onCreate - folderId(extra=$folderIdFromExtra, path=$folderIdFromPath, query=$folderIdFromQuery) -> PICKED: $folderIdFromLink"
+        )
         Log.d(TAG, "🟩 onCreate - DisplayName: $displayNameFromIntent")
 
         // 目視確認用（端末上に出す）
@@ -59,7 +73,10 @@ class HomeActivity : ComponentActivity() {
         val hasDriveScope = account?.let {
             GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE))
         } ?: false
-        Log.d(TAG, "🟩 SignedIn=${account != null}, DriveScope=$hasDriveScope, displayName=${account?.displayName}")
+        Log.d(
+            TAG,
+            "🟩 SignedIn=${account != null}, DriveScope=$hasDriveScope, displayName=${account?.displayName}"
+        )
 
         if (account == null || !hasDriveScope) {
             Log.d(TAG, "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
@@ -94,6 +111,7 @@ class HomeActivity : ComponentActivity() {
                                 modifier = Modifier.padding(innerPadding),
                             )
                         }
+
                         BottomTab.Shared -> {
                             SharedScreen(
                                 modifier = Modifier.padding(innerPadding),

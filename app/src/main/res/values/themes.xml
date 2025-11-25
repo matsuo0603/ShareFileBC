@@ -1,33 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- Compose中心運用向けの最小構成（View依存の colorBackground は使わない） -->
     <style name="Theme.ShareFileBC" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- 基本色 -->
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorOnPrimary">@color/onPrimary</item>
-
-        <item name="colorSecondary">@color/secondary</item>
-        <item name="colorOnSecondary">@color/onSecondary</item>
-
-        <item name="colorTertiary">@color/tertiary</item>
-        <item name="colorOnTertiary">@color/onTertiary</item>
-
-        <!-- Surface 周り（Compose のカード/シート等で使用） -->
-        <item name="colorSurface">@color/surface</item>
-        <item name="colorOnSurface">@color/onSurface</item>
-        <item name="colorSurfaceVariant">@color/surfaceVariant</item>
-        <item name="colorOnSurfaceVariant">@color/onSurfaceVariant</item>
-        <item name="colorOutline">@color/outline</item>
-
-        <!-- エラー色 -->
-        <item name="colorError">@color/error</item>
-        <item name="colorOnError">@color/onError</item>
-
-        <!-- アプリ全体のウィンドウ背景（ライト/ダークは colors.xml / values-night で切替） -->
-        <item name="android:windowBackground">@color/background</item>
-        <!-- 必要ならナビバー色も -->
-        <item name="android:navigationBarColor">@color/background</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
     </style>
 
 </resources>
