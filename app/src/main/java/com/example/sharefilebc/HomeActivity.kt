@@ -16,6 +16,8 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.common.api.Scope
 import com.google.api.services.drive.DriveScopes
+import com.example.sharefilebc.crypto.KeyDerivation
+import com.example.sharefilebc.crypto.PublicKeyUtils
 
 class HomeActivity : ComponentActivity() {
 
@@ -30,9 +32,15 @@ class HomeActivity : ComponentActivity() {
         try {
             val keyManager = KeyManager.getInstance(applicationContext)
             val xprv = keyManager.getOrCreateMasterXprv()
-            // セキュリティ的にフル出力は危険なので、デバッグ用に先頭だけログに出す
             val preview = if (xprv.length > 16) xprv.take(16) + "..." else xprv
             Log.d(TAG, "Tapyrus master xprv (preview) = $preview")
+            val derivationPath = "m/44'/0'/0'/0/0"
+            val childXprv = KeyDerivation.deriveChildXprv(xprv, derivationPath)
+            val childPreview = if (childXprv.length > 16) childXprv.take(16) + "..." else childXprv
+            Log.d(TAG, "Child xprv (preview) at $derivationPath = $childPreview")
+
+            val compressedPubKey = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv)
+            Log.d(TAG, "Compressed public key (hex) at $derivationPath = $compressedPubKey")
         } catch (e: Exception) {
             Log.e(TAG, "Tapyrus getOrCreateMasterXprv error", e)
         }
