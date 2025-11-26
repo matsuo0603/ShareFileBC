@@ -6,6 +6,7 @@ import java.security.MessageDigest
 import java.security.Security
 import org.bouncycastle.jce.ECNamedCurveTable
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import java.security.NoSuchAlgorithmException
 
 /**
  * xprv から圧縮公開鍵を生成するユーティリティ。
@@ -36,7 +37,11 @@ object PublicKeyUtils {
 
     internal fun hash160(data: ByteArray): ByteArray {
         val sha = MessageDigest.getInstance("SHA-256").digest(data)
-        val ripe = MessageDigest.getInstance("RipeMD160", "BC").digest(sha)
+        val ripe = try {
+            MessageDigest.getInstance("RIPEMD160", "BC").digest(sha)
+        } catch (e: NoSuchAlgorithmException) {
+            MessageDigest.getInstance("RIPEMD160").digest(sha)
+        }
         return ripe
     }
 }
