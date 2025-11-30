@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
@@ -63,11 +64,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -102,6 +106,9 @@ fun HomeScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
+
+    // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
+    var walletAddress by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -162,8 +169,20 @@ fun HomeScreen(
         }
     )
 
+    // 共有相手一覧の購読
     LaunchedEffect(Unit) {
         userDao.getAll().collectLatest { list -> users = list }
+    }
+
+    // TapyrusWalletManager から現在の受取アドレスを 1 回取得
+    LaunchedEffect(Unit) {
+        val manager = TapyrusWalletManager.getInstance(context)
+        val addr = try {
+            manager.getCurrentAddress()
+        } catch (e: Exception) {
+            null
+        }
+        walletAddress = addr
     }
 
     Scaffold(
@@ -223,6 +242,15 @@ fun HomeScreen(
                     primaryUnit = "Token",
                     secondaryAmount = "0.00000000",
                     secondaryUnit = "TPC"
+                )
+            }
+
+            // 🔐 Tapyrus アドレス表示カード（Swift HomeView の currentAddress 表示に相当）
+            walletAddress?.let { addr ->
+                Spacer(Modifier.height(16.dp))
+                WalletAddressCard(
+                    address = addr,
+                    modifier = Modifier
                 )
             }
 
@@ -429,6 +457,66 @@ private fun BalanceSummaryCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium
             )
+        }
+    }
+}
+
+/**
+ * Tapyrus の現在の受取アドレスを表示するカード。
+ * Swift HomeView で currentAddress を表示しているカードに相当。
+ */
+@Composable
+private fun WalletAddressCard(
+    address: String,
+    modifier: Modifier = Modifier
+) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "My Tapyrus Address",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = address,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(12.dp))
+                IconButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(address))
+                        Toast.makeText(context, "アドレスをコピーしました", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = "アドレスをコピー"
+                    )
+                }
+            }
         }
     }
 }

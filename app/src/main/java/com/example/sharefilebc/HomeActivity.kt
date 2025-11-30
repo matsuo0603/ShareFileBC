@@ -7,17 +7,16 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.padding
+import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.common.api.Scope
 import com.google.api.services.drive.DriveScopes
-import com.example.sharefilebc.crypto.KeyDerivation
-import com.example.sharefilebc.crypto.PublicKeyUtils
 
 class HomeActivity : ComponentActivity() {
 
@@ -28,22 +27,26 @@ class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 🔐 マスター鍵(xprv)の生成・取得（今回は秘密鍵/公開鍵機能だけ。ウォレット機能は後で）
+        // 🔐 Tapyrus ウォレットの受取アドレス取得（鍵生成〜派生は TapyrusWalletManager に集約）
         try {
-            val keyManager = KeyManager.getInstance(applicationContext)
-            val xprv = keyManager.getOrCreateMasterXprv()
-            val preview = if (xprv.length > 16) xprv.take(16) + "..." else xprv
-            Log.d(TAG, "Tapyrus master xprv (preview) = $preview")
-            val derivationPath = "m/44'/0'/0'/0/0"
-            val childXprv = KeyDerivation.deriveChildXprv(xprv, derivationPath)
-            val childPreview = if (childXprv.length > 16) childXprv.take(16) + "..." else childXprv
-            Log.d(TAG, "Child xprv (preview) at $derivationPath = $childPreview")
-
-            val compressedPubKey = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv)
-            Log.d(TAG, "Compressed public key (hex) at $derivationPath = $compressedPubKey")
+            val walletManager = TapyrusWalletManager.getInstance(applicationContext)
+            val currentAddress = walletManager.getCurrentAddress()
+            Log.d(
+                TAG,
+                "Tapyrus current address (m/44'/0'/0'/0/0) = $currentAddress"
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Tapyrus getOrCreateMasterXprv error", e)
+            Log.e(TAG, "Tapyrus wallet initialization error", e)
         }
+
+        // 🔍 テスト用ログ：公開鍵 / 秘密鍵の確認
+        val walletManager = TapyrusWalletManager.getInstance(applicationContext)
+        val pubHex = walletManager.getCurrentPublicKeyHex()
+        Log.d(TAG, "Tapyrus public key HEX = $pubHex")
+
+        val privHex = walletManager.getCurrentPrivateKeyHex()
+        Log.d(TAG, "Tapyrus private key HEX = $privHex")
+
 
         val deepLinkUri: Uri? = intent?.data
 
