@@ -19,6 +19,9 @@ import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.sharefilebc.data.UserEntity
+import com.example.sharefilebc.managers.TapyrusWalletManager
+import com.example.sharefilebc.crypto.SecurePackage
 
 class DriveUploader(private val context: Context) {
 
@@ -39,7 +42,7 @@ class DriveUploader(private val context: Context) {
 
     suspend fun uploadFileAndRecordWithSharing(
         fileUri: Uri,
-        recipientName: String,
+        recipient: UserEntity,
         db: AppDatabase
     ): Triple<String, String, String>? {
         return withContext(Dispatchers.IO) {
@@ -56,8 +59,7 @@ class DriveUploader(private val context: Context) {
                 val fileBytes = inputStream?.readBytes() ?: return@withContext null
 
                 val appFolderId = getOrCreateFolder(driveService, "ShareFileBCApp", "root")
-                val recipientFolderId = getOrCreateFolder(driveService, recipientName, appFolderId)
-
+                val recipientFolderId = getOrCreateFolder(driveService, recipient.name, appFolderId)
                 val jst = TimeZone.getTimeZone("Asia/Tokyo")
                 val dateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = jst }
                 val dateTimeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply { timeZone = jst }
@@ -66,12 +68,29 @@ class DriveUploader(private val context: Context) {
                 val currentDateTime = dateTimeFormatter.format(now)
 
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
+                val wallet = TapyrusWalletManager.getInstance(context)
 
+                val recipientPublicKeyHex = recipient.publicKeyHex.takeIf { it.isNotBlank() }
+                val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
+                val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
+
+                val (uploadBytes, uploadName) = if (recipientPublicKeyHex != null) {
+                    val secureBytes = SecurePackage.create(
+                        data = fileBytes,
+                        fileName = fileName,
+                        recipientPublicKeyHex = recipientPublicKeyHex,
+                        signingPrivateKeyHex = signingPrivateKeyHex,
+                        signerPublicKeyHex = signerPublicKeyHex
+                    )
+                    secureBytes to "$fileName.vpfs"
+                } else {
+                    fileBytes to fileName
+                }
                 val fileMetadata = File().apply {
-                    name = fileName
+                    name = uploadName
                     parents = listOf(dateFolderId)
                 }
-                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", fileBytes)
+                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", uploadBytes)
                 val uploadedFile = driveService.files().create(fileMetadata, fileContent)
                     .setFields("id, name, webViewLink")
                     .execute()
@@ -89,7 +108,7 @@ class DriveUploader(private val context: Context) {
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
                         date = currentDateTime,
-                        recipientName = recipientName,
+                        recipientName = recipient.name,
                         folderId = dateFolderId,
                         fileName = fileName,
                         fileGoogleDriveId = uploadedFile.id

@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.sharefilebc.managers.TapyrusWalletManager
+import com.example.sharefilebc.crypto.SecurePackage
 
 class DriveDownloader(private val context: Context) {
 
@@ -142,17 +144,24 @@ class DriveDownloader(private val context: Context) {
                     driveService.files().get(fileId).executeMediaAndDownloadTo(it)
                 }
 
-                MediaScannerConnection.scanFile(context, arrayOf(outputFile.absolutePath), null, null)
+                val decryptedFile = tryDecryptPackageIfNeeded(outputFile)
+
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(decryptedFile.absolutePath),
+                    null,
+                    null
+                )
 
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
                         context,
-                        "${fileMetadata.name} をダウンロードしました。",
+                        "${decryptedFile.name} をダウンロードしました。",
                         Toast.LENGTH_LONG
                     ).show()
                 }
 
-                outputFile
+                decryptedFile
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "❌ ダウンロードエラー", e)
                 withContext(Dispatchers.Main) {
@@ -164,6 +173,28 @@ class DriveDownloader(private val context: Context) {
                 }
                 null
             }
+        }
+    }
+
+    private fun tryDecryptPackageIfNeeded(downloadedFile: java.io.File): java.io.File {
+        if (!downloadedFile.name.endsWith(".vpfs")) return downloadedFile
+
+        return try {
+            val packageBytes = downloadedFile.readBytes()
+            val wallet = TapyrusWalletManager.getInstance(context)
+            val recipientPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
+            val (decryptedBytes, fileName) = SecurePackage.unpack(
+                packageData = packageBytes,
+                recipientPrivateKeyHex = recipientPrivateKeyHex,
+                signerPublicKeyHex = null
+            )
+
+            val outputFile = java.io.File(downloadedFile.parentFile, fileName)
+            FileOutputStream(outputFile).use { it.write(decryptedBytes) }
+            outputFile
+        } catch (e: Exception) {
+            Log.e("DriveDownloader", "パッケージ復号に失敗しました", e)
+            downloadedFile
         }
     }
 }

@@ -1,8 +1,11 @@
 package com.example.sharefilebc.crypto
 
+import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import com.example.sharefilebc.crypto.HexUtils.toHexString
+import com.example.sharefilebc.crypto.PublicKeyUtils
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.math.BigInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -15,7 +18,7 @@ import java.util.zip.ZipOutputStream
  *   1) AES鍵生成 → ファイル本体 & ファイル名を AES-GCM で暗号化
  *   2) AES鍵を ECIES で暗号化（受信者公開鍵）
  *   3) 上記すべてのバイト列を連結して ECDSA 署名（送信者秘密鍵）
- *   4) 11個ファイルを ZIP 化して .vpfs にする
+ *   4) 署名者公開鍵も含めた 12 個のエントリを ZIP 化して .vpfs にする
  *
  *  [unpack]
  *   1) ZIP 展開してそれぞれの要素を取り出す
@@ -32,13 +35,15 @@ object SecurePackage {
      * @param fileName 送信ファイル名
      * @param recipientPublicKeyHex 受信者の公開鍵（ECIES 用）
      * @param signingPrivateKeyHex  送信者の秘密鍵（ECDSA 用）
+     * @param signerPublicKeyHex    署名検証用の公開鍵（省略時は signingPrivateKeyHex から導出）
      * @return .vpfs パッケージのバイト列
      */
     fun create(
         data: ByteArray,
         fileName: String,
         recipientPublicKeyHex: String,
-        signingPrivateKeyHex: String
+        signingPrivateKeyHex: String,
+        signerPublicKeyHex: String? = null
     ): ByteArray {
         // 1. ファイル本体 & ファイル名を暗号化する AES 鍵を生成
         val aesKey = AESGCMCrypto.generateKey()
@@ -81,6 +86,9 @@ object SecurePackage {
         val signature = ECDSA.sign(message, signingPrivateKeyHex)
         println("✍️ signature: ${android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP)}")
 
+        val signerPubKeyToEmbed = signerPublicKeyHex
+            ?: derivePublicKeyHexFromPrivate(signingPrivateKeyHex)
+
         // 4. 11 個のファイルを ZIP に詰める
         val zipBytes = ByteArrayOutputStream()
         ZipOutputStream(zipBytes).use { zos ->
@@ -103,6 +111,7 @@ object SecurePackage {
             putEntry("nameTag", encName.tag)
             putEntry("nameCipher", encName.ciphertext)
             putEntry("signature", signature)
+            putEntry("signerPubKey", signerPubKeyToEmbed.toByteArray())
         }
 
         return zipBytes.toByteArray()
@@ -116,7 +125,7 @@ object SecurePackage {
     fun unpack(
         packageData: ByteArray,
         recipientPrivateKeyHex: String,
-        signerPublicKeyHex: String
+        signerPublicKeyHex: String?
     ): Pair<ByteArray, String> {
         // 1. ZIP をメモリ上で展開
         var keyEphemeral: ByteArray? = null
@@ -130,6 +139,7 @@ object SecurePackage {
         var nameTag: ByteArray? = null
         var nameCipher: ByteArray? = null
         var signature: ByteArray? = null
+        var signerPubKey: String? = null
 
         ZipInputStream(ByteArrayInputStream(packageData)).use { zis ->
             while (true) {
@@ -147,6 +157,7 @@ object SecurePackage {
                     "nameTag" -> nameTag = bytes
                     "nameCipher" -> nameCipher = bytes
                     "signature" -> signature = bytes
+                    "signerPubKey" -> signerPubKey = bytes.toString(Charsets.UTF_8)
                 }
                 zis.closeEntry()
             }
@@ -196,7 +207,10 @@ object SecurePackage {
             bout.toByteArray()
         }
 
-        val verified = ECDSA.verify(message, sig, signerPublicKeyHex)
+        val resolvedSignerPubKey = signerPublicKeyHex ?: signerPubKey
+        require(!resolvedSignerPubKey.isNullOrBlank()) { "署名者の公開鍵を取得できません" }
+
+        val verified = ECDSA.verify(message, sig, resolvedSignerPubKey)
         if (!verified) {
             println("❌ 署名検証失敗")
             throw IllegalStateException("署名検証に失敗しました")
@@ -224,5 +238,12 @@ object SecurePackage {
             buffer.write(tmp, 0, read)
         }
         return buffer.toByteArray()
+    }
+
+    private fun derivePublicKeyHexFromPrivate(privateKeyHex: String): String {
+        val privBytes = privateKeyHex.hexToByteArray()
+        val privInt = BigInteger(1, privBytes)
+        val compressedPubKey = PublicKeyUtils.compressedPublicKeyFromPrivate(privInt)
+        return compressedPubKey.toHexString()
     }
 }

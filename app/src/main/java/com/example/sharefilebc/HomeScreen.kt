@@ -106,6 +106,7 @@ fun HomeScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
+    var addPublicKey by remember { mutableStateOf("") }
 
     // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
     var walletAddress by remember { mutableStateOf<String?>(null) }
@@ -142,7 +143,7 @@ fun HomeScreen(
                 withContext(Dispatchers.IO) {
                     val result = driveUploader.uploadFileAndRecordWithSharing(
                         fileUri = uri,
-                        recipientName = target.name,
+                        recipient = target,
                         db = db
                     )
                     withContext(Dispatchers.Main) {
@@ -334,6 +335,14 @@ fun HomeScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = addPublicKey,
+                        onValueChange = { addPublicKey = it },
+                        placeholder = { Text("受信者の公開鍵HEX (任意)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             dismissButton = {
@@ -345,12 +354,14 @@ fun HomeScreen(
                         if (addName.isNotBlank() && addEmail.isNotBlank()) {
                             val entity = UserEntity(
                                 name = addName.trim(),
-                                email = addEmail.trim()
+                                email = addEmail.trim(),
+                                publicKeyHex = addPublicKey.trim()
                             )
                             scope.launch {
                                 withContext(Dispatchers.IO) { userDao.insert(entity) }
                                 addName = ""
                                 addEmail = ""
+                                addPublicKey = ""
                                 showAddDialog = false
                                 snackbarHostState.showSnackbar("登録が完了しました")
                             }
