@@ -1,13 +1,11 @@
 package com.example.sharefilebc.crypto
 
 import com.example.sharefilebc.crypto.HexUtils.toHexString
+import org.bouncycastle.crypto.digests.RIPEMD160Digest
+import org.bouncycastle.jce.ECNamedCurveTable
 import java.math.BigInteger
 import java.security.MessageDigest
-import java.security.Security
-import org.bouncycastle.jce.ECNamedCurveTable
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.security.NoSuchAlgorithmException
-import org.bouncycastle.crypto.digests.RIPEMD160Digest
 
 /**
  * xprv から圧縮公開鍵を生成するユーティリティ。
@@ -19,7 +17,7 @@ object PublicKeyUtils {
     private val CURVE_PARAMS = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
 
     init {
-        Security.addProvider(BouncyCastleProvider())
+        BouncyCastleInitializer.ensure()
     }
 
     /**
@@ -40,7 +38,8 @@ object PublicKeyUtils {
         val sha256 = MessageDigest.getInstance("SHA-256").digest(data)
 
         return try {
-            MessageDigest.getInstance("RIPEMD160", "BC").digest(sha256)
+            val provider = BouncyCastleInitializer.ensure()
+            MessageDigest.getInstance("RIPEMD160", provider).digest(sha256)
         } catch (_: Exception) {
             try {
                 MessageDigest.getInstance("RIPEMD160").digest(sha256)

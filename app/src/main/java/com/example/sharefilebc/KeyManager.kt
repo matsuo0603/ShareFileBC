@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.chaintope.tapyrus.wallet.Network
 import com.chaintope.tapyrus.wallet.generateMasterKey
+import com.example.sharefilebc.crypto.BouncyCastleInitializer
 
 /**
  * マスター鍵(xprv)の管理だけを行うクラス。
@@ -48,6 +49,9 @@ class KeyManager private constructor(context: Context) {
             Log.d(TAG, "Using existing master xprv (length=${existing.length})")
             return existing
         }
+
+        // Tapyrus ライブラリが secp256k1 を使う前に、BC プロバイダを確実に差し替える
+        BouncyCastleInitializer.ensure()
 
         // Tapyrus ライブラリでマスター鍵を生成（Network.PROD）
         val newXprv = generateMasterKey(Network.PROD)

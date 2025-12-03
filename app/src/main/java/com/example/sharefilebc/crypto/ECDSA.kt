@@ -4,11 +4,9 @@ import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import org.bouncycastle.jce.ECNamedCurveTable
 import org.bouncycastle.jce.spec.ECPrivateKeySpec
 import org.bouncycastle.jce.spec.ECPublicKeySpec
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.MessageDigest
-import java.security.Security
 import java.security.Signature
 
 /**
@@ -18,7 +16,7 @@ import java.security.Signature
 object ECDSA {
 
     init {
-        Security.addProvider(BouncyCastleProvider())
+        BouncyCastleInitializer.ensure()
     }
 
     private const val CURVE_NAME = "secp256k1"
@@ -33,7 +31,8 @@ object ECDSA {
         // まず message を SHA-256
         val hash = sha256(message)
 
-        val sig = Signature.getInstance("SHA256withECDSA", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val sig = Signature.getInstance("SHA256withECDSA", provider)
         sig.initSign(privateKey)
         sig.update(hash)
         return sig.sign()  // DER 形式
@@ -48,7 +47,8 @@ object ECDSA {
 
         val hash = sha256(message)
 
-        val sig = Signature.getInstance("SHA256withECDSA", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val sig = Signature.getInstance("SHA256withECDSA", provider)
         sig.initVerify(publicKey)
         sig.update(hash)
         return sig.verify(signature)
@@ -60,7 +60,8 @@ object ECDSA {
         val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
         val d = BigInteger(1, raw32)
         val privSpec = ECPrivateKeySpec(d, params)
-        val kf = KeyFactory.getInstance("EC", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val kf = KeyFactory.getInstance("EC", provider)
         return kf.generatePrivate(privSpec)
     }
 
@@ -69,7 +70,8 @@ object ECDSA {
         val curve = params.curve
         val point = curve.decodePoint(compressedOrEncoded)
         val pubSpec = ECPublicKeySpec(point, params)
-        val kf = KeyFactory.getInstance("EC", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val kf = KeyFactory.getInstance("EC", provider)
         return kf.generatePublic(pubSpec)
     }
 

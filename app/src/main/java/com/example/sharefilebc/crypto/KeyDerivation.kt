@@ -1,14 +1,12 @@
 package com.example.sharefilebc.crypto
 
 import android.util.Log
+import org.bouncycastle.jce.ECNamedCurveTable
 import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.security.MessageDigest
-import java.security.Security
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import org.bouncycastle.jce.ECNamedCurveTable
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 /**
  * BIP32 の子鍵派生を担当するクラス。
@@ -24,7 +22,7 @@ object KeyDerivation {
     private val CURVE_PARAMS = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
 
     init {
-        Security.addProvider(BouncyCastleProvider())
+        BouncyCastleInitializer.ensure()
     }
 
     /**

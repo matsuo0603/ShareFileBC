@@ -3,7 +3,7 @@ package com.example.sharefilebc.crypto
 import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import com.example.sharefilebc.crypto.HexUtils.toHexString
 import org.bouncycastle.jce.ECNamedCurveTable
-import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.jce.interfaces.ECPublicKey
 import org.bouncycastle.jce.spec.ECPrivateKeySpec
 import org.bouncycastle.jce.spec.ECPublicKeySpec
 import java.math.BigInteger
@@ -12,8 +12,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.Security
-import javax.crypto.KeyAgreement   // ★ java.security じゃなくてこちら
+import javax.crypto.KeyAgreement
 
 /**
  * ECIES (secp256k1) による AES 鍵のカプセル化
@@ -25,8 +24,8 @@ import javax.crypto.KeyAgreement   // ★ java.security じゃなくてこちら
 object ECIES {
 
     init {
-        // BouncyCastle プロバイダ登録
-        Security.addProvider(BouncyCastleProvider())
+        // BouncyCastle プロバイダ登録を強制（Android 標準 BC を差し替える）
+        BouncyCastleInitializer.ensure()
     }
 
     class EncryptedResult(
@@ -51,7 +50,7 @@ object ECIES {
         // 2. エフェメラル鍵ペア生成（BCの secp256k1 を使用）
         val ephemeralKeyPair = generateEphemeralKeyPair()
         val ephPrivateKey = ephemeralKeyPair.private
-        val ephPublicKey = ephemeralKeyPair.public
+        val ephPublicKey = ephemeralKeyPair.public as ECPublicKey
 
         // 3. ECDH 共有秘密
         val sharedSecret = generateSharedSecret(ephPrivateKey, recipientPublicKey)
@@ -63,7 +62,8 @@ object ECIES {
         val enc = AESGCMCrypto.encrypt(aesKey, derivedKey)
 
         println("🔁 ECIES encrypt recipientPubKey: $recipientPublicKeyHex")
-        println("🔁 ECIES encrypt ephemeralPubKey: ${ephPublicKey.encoded.toHexString()}")
+        val ephemeralCompressed = ephPublicKey.q.getEncoded(true)
+        println("🔁 ECIES encrypt ephemeralPubKey: ${ephemeralCompressed.toHexString()}")
         println("🔁 ECIES encrypt sharedSecretHash: ${
             android.util.Base64.encodeToString(derivedKey, android.util.Base64.NO_WRAP)
         }")
@@ -78,7 +78,8 @@ object ECIES {
         }")
 
         return EncryptedResult(
-            ephemeralPublicKey = ephPublicKey.encoded,
+            // DER(X.509) ではなく圧縮形式（33byte）の公開鍵を格納する
+            ephemeralPublicKey = ephemeralCompressed,
             encryptedAESKey = enc.ciphertext,
             nonce = enc.nonce,
             tag = enc.tag
@@ -130,7 +131,8 @@ object ECIES {
 
     private fun generateEphemeralKeyPair(): KeyPair {
         val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
-        val kpg = KeyPairGenerator.getInstance("EC", "BC")  // ★ AndroidOpenSSL ではなく BC
+        val provider = BouncyCastleInitializer.ensure()
+        val kpg = KeyPairGenerator.getInstance("EC", provider)  // ★ AndroidOpenSSL ではなく BC
         kpg.initialize(params, secureRandom)
         return kpg.generateKeyPair()
     }
@@ -141,7 +143,8 @@ object ECIES {
         val point = curve.decodePoint(compressedOrEncoded) // 圧縮形式を復元
         val pubSpec = ECPublicKeySpec(point, params)
 
-        val kf = KeyFactory.getInstance("EC", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val kf = KeyFactory.getInstance("EC", provider)
         return kf.generatePublic(pubSpec)
     }
 
@@ -154,7 +157,8 @@ object ECIES {
         val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
         val d = BigInteger(1, raw32)
         val privSpec = ECPrivateKeySpec(d, params)
-        val kf = KeyFactory.getInstance("EC", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val kf = KeyFactory.getInstance("EC", provider)
         return kf.generatePrivate(privSpec)
     }
 
@@ -162,7 +166,8 @@ object ECIES {
         privateKey: java.security.PrivateKey,
         publicKey: java.security.PublicKey
     ): ByteArray {
-        val ka = KeyAgreement.getInstance("ECDH", "BC")
+        val provider = BouncyCastleInitializer.ensure()
+        val ka = KeyAgreement.getInstance("ECDH", provider)
         ka.init(privateKey)
         ka.doPhase(publicKey, true)
         return ka.generateSecret()
