@@ -64,15 +64,9 @@ class LoginActivity : ComponentActivity() {
         Log.d(TAG, "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
         Log.d(TAG, "onCreate: folderId received: $folderIdFromHomeActivity")
 
-        // 目視確認用
-        Toast.makeText(
-            this,
-            "LoginActivity:\ndata=${deepLinkUriFromHomeActivity?.toString() ?: "null"}\nfolderId=$folderIdFromHomeActivity",
-            Toast.LENGTH_LONG
-        ).show()
-
-        // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
+// Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         val already = GoogleSignIn.getLastSignedInAccount(this)
+
         val hasDrive = already?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
         if (deepLinkUriFromHomeActivity != null && (already == null || !hasDrive)) {
             launcher.launch(googleSignInClient.signInIntent)
@@ -131,17 +125,13 @@ class LoginActivity : ComponentActivity() {
             Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=${GoogleSignIn.hasPermissions(account, Scope(DriveScopes.DRIVE))}")
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
-                // Deep Link は data に、folderId は extra に戻す（両経路で再現耐性UP）
+                // deep link に、folderId は extra に戻す（両経路で再現耐性UP）
                 deepLinkUriFromHomeActivity?.let { data = it }
                 folderIdFromHomeActivity?.let { putExtra("folderId", it) }
             }
-            Toast.makeText(
-                this,
-                "Back to Home:\ndata=${deepLinkUriFromHomeActivity?.toString() ?: "null"}\nfolderId=$folderIdFromHomeActivity",
-                Toast.LENGTH_LONG
-            ).show()
             startActivity(intent)
             finish()
+
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Googleサインイン失敗: ${e.message}", e)
