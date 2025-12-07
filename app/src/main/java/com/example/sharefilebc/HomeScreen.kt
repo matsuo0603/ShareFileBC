@@ -5,6 +5,7 @@ package com.example.sharefilebc
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.core.Animatable
@@ -50,6 +51,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -72,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.managers.TapyrusWalletManager
+import com.example.sharefilebc.network.PublicKeyApiClient
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -97,7 +100,7 @@ fun HomeScreen(
     val db = remember { AppDatabase.getDatabase(context) }
     val userDao = db.userDao()
     val driveUploader = remember { DriveUploader(context) }
-
+    val publicKeyApi = remember { PublicKeyApiClient() }
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
     var isUploading by remember { mutableStateOf(false) }
     var showAccountScreen by remember { mutableStateOf(false) }
@@ -106,7 +109,6 @@ fun HomeScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
-    var addPublicKey by remember { mutableStateOf("") }
 
     // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
     var walletAddress by remember { mutableStateOf<String?>(null) }
@@ -148,20 +150,40 @@ fun HomeScreen(
                     )
                     withContext(Dispatchers.Main) {
                         isUploading = false
-                        if (result == null) {
-                            Toast.makeText(
-                                context,
-                                "アップロードに失敗しました（Google認証を確認）",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        } else {
-                            val (fileName, _, folderId) = result
-                            EmailSender.sendEmailWithDriveLink(
-                                context = context,
-                                recipientEmail = target.email,
-                                fileName = fileName,
-                                folderId = folderId
-                            )
+                        when (result) {
+                            is UploadResult.Success -> {
+                                val (fileName, _, folderId) = result
+                                EmailSender.sendEmailWithDriveLink(
+                                    context = context,
+                                    recipientEmail = target.email,
+                                    fileName = fileName,
+                                    folderId = folderId
+                                )
+                            }
+
+                            is UploadResult.MissingRecipientPublicKey -> {
+                                val link = result.registrationLink
+                                val snackbarResult = snackbarHostState.showSnackbar(
+                                    message = "相手の公開鍵がまだ登録されていません",
+                                    actionLabel = link?.let { "メール送信" }
+                                )
+                                if (snackbarResult == SnackbarResult.ActionPerformed && link != null) {
+                                    EmailSender.sendPublicKeyRegistrationEmail(
+                                        context = context,
+                                        recipientEmail = target.email,
+                                        registrationUrl = link,
+                                        senderEmail = accountEmail
+                                    )
+                                }
+                            }
+
+                            is UploadResult.Failure -> {
+                                Toast.makeText(
+                                    context,
+                                    "アップロードに失敗しました（Google認証を確認）",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                         }
                     }
                 }
@@ -335,14 +357,6 @@ fun HomeScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = addPublicKey,
-                        onValueChange = { addPublicKey = it },
-                        placeholder = { Text("受信者の公開鍵HEX (任意)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
             },
             dismissButton = {
@@ -352,18 +366,35 @@ fun HomeScreen(
                 TextButton(
                     onClick = {
                         if (addName.isNotBlank() && addEmail.isNotBlank()) {
-                            val entity = UserEntity(
-                                name = addName.trim(),
-                                email = addEmail.trim(),
-                                publicKeyHex = addPublicKey.trim()
-                            )
+                            val name = addName.trim()
+                            val email = addEmail.trim()
                             scope.launch {
-                                withContext(Dispatchers.IO) { userDao.insert(entity) }
+                                val userId = withContext(Dispatchers.IO) {
+                                    userDao.insert(
+                                        UserEntity(
+                                            name = name,
+                                            email = email,
+                                            publicKeyHex = null
+                                        )
+                                    ).toInt()
+                                }
                                 addName = ""
                                 addEmail = ""
-                                addPublicKey = ""
                                 showAddDialog = false
                                 snackbarHostState.showSnackbar("登録が完了しました")
+                                val fetchResult = withContext(Dispatchers.IO) {
+                                    publicKeyApi.fetchPublicKey(email)
+                                }
+                                fetchResult.onSuccess { key ->
+                                    if (key != null) {
+                                        withContext(Dispatchers.IO) {
+                                            userDao.updatePublicKey(userId, key)
+                                        }
+                                        snackbarHostState.showSnackbar("公開鍵を自動取得しました")
+                                    }
+                                }.onFailure { e ->
+                                    Log.e("HomeScreen", "公開鍵の取得に失敗しました", e)
+                                }
                             }
                         }
                     }

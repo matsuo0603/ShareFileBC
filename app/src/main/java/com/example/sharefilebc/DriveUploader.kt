@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.SharedFolderEntity
+import com.example.sharefilebc.network.PublicKeyApiClient
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -23,7 +24,15 @@ import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.crypto.SecurePackage
 
+sealed class UploadResult {
+    data class Success(val fileName: String, val fileId: String, val folderId: String) : UploadResult()
+    data class MissingRecipientPublicKey(val registrationLink: String?) : UploadResult()
+    data class Failure(val error: Throwable? = null) : UploadResult()
+}
+
 class DriveUploader(private val context: Context) {
+
+    private val publicKeyApi = PublicKeyApiClient()
 
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
@@ -44,10 +53,10 @@ class DriveUploader(private val context: Context) {
         fileUri: Uri,
         recipient: UserEntity,
         db: AppDatabase
-    ): Triple<String, String, String>? {
+    ): UploadResult {
         return withContext(Dispatchers.IO) {
             try {
-                val driveService = getDriveService() ?: return@withContext null
+                val driveService = getDriveService() ?: return@withContext UploadResult.Failure()
 
                 val fileName = context.contentResolver.query(fileUri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -56,7 +65,7 @@ class DriveUploader(private val context: Context) {
                 } ?: "Unknown File"
 
                 val inputStream: InputStream? = context.contentResolver.openInputStream(fileUri)
-                val fileBytes = inputStream?.readBytes() ?: return@withContext null
+                val fileBytes = inputStream?.readBytes() ?: return@withContext UploadResult.Failure()
 
                 val appFolderId = getOrCreateFolder(driveService, "ShareFileBCApp", "root")
                 val recipientFolderId = getOrCreateFolder(driveService, recipient.name, appFolderId)
@@ -70,7 +79,19 @@ class DriveUploader(private val context: Context) {
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
                 val wallet = TapyrusWalletManager.getInstance(context)
 
-                val recipientPublicKeyHex = recipient.publicKeyHex.takeIf { it.isNotBlank() }
+                var recipientPublicKeyHex = recipient.publicKeyHex?.takeIf { it.isNotBlank() }
+                if (recipientPublicKeyHex == null) {
+                    val fetched = publicKeyApi.fetchPublicKey(recipient.email).getOrNull()
+                    if (fetched != null) {
+                        recipientPublicKeyHex = fetched
+                        updateRecipientPublicKey(db, recipient, fetched)
+                    }
+                }
+                if (recipientPublicKeyHex == null) {
+                    return@withContext UploadResult.MissingRecipientPublicKey(
+                        buildRegistrationLink(recipient.email, wallet)
+                    )
+                }
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
 
@@ -116,12 +137,40 @@ class DriveUploader(private val context: Context) {
                 )
 
                 // 共有リンク用には受信者名フォルダIDを返す
-                return@withContext Triple(fileName, uploadedFile.id, recipientFolderId)
+                return@withContext UploadResult.Success(fileName, uploadedFile.id, recipientFolderId)
             } catch (e: Exception) {
                 Log.e("DriveUploader", "Upload error", e)
-                return@withContext null
+                return@withContext UploadResult.Failure(e)
             }
         }
+    }
+
+    private suspend fun updateRecipientPublicKey(
+        db: AppDatabase,
+        recipient: UserEntity,
+        publicKeyHex: String
+    ) {
+        val dao = db.userDao()
+        if (recipient.id != 0) {
+            dao.updatePublicKey(recipient.id, publicKeyHex)
+        } else {
+            dao.findByEmail(recipient.email)?.let { dao.updatePublicKey(it.id, publicKeyHex) }
+        }
+    }
+
+    private fun buildRegistrationLink(
+        recipientEmail: String,
+        wallet: TapyrusWalletManager
+    ): String? {
+        val requesterEmail = GoogleSignIn.getLastSignedInAccount(context)?.email ?: return null
+        val requesterPubKey = runCatching { wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0") }
+            .getOrNull()
+            ?: return null
+
+        val encodedEmail = Uri.encode(recipientEmail)
+        val encodedRequester = Uri.encode(requesterEmail)
+        val encodedPubKey = Uri.encode(requesterPubKey)
+        return "https://sharefilebcapp.web.app/pubkey/register?email=$encodedEmail&requester=$encodedRequester&pubKeyHex=$encodedPubKey"
     }
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {

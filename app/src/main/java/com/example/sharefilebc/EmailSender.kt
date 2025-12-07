@@ -71,7 +71,32 @@ object EmailSender {
             appendLine()
             append("※ アプリ未インストール時はWebページが開きます。")
         }
+        sendEmail(context, recipientEmail, subject, body)
+    }
 
+    /** 公開鍵登録用のリンクをメールで送付する */
+    fun sendPublicKeyRegistrationEmail(
+        context: Context,
+        recipientEmail: String,
+        registrationUrl: String,
+        senderEmail: String?
+    ) {
+        val subject = "公開鍵登録のお願い"
+        val body = buildString {
+            appendLine("以下のリンクをタップして公開鍵を登録してください。")
+            appendLine(registrationUrl)
+            appendLine()
+            appendLine("リンクを開いた後に公開鍵が登録されると、暗号化したファイルを送信できます。")
+            senderEmail?.let {
+                appendLine()
+                appendLine("送信者: $it")
+            }
+        }
+
+        sendEmail(context, recipientEmail, subject, body)
+    }
+
+    private fun sendEmail(context: Context, recipientEmail: String, subject: String, body: String) {
         val activity = context as? Activity
         if (activity == null) {
             Log.e("EmailSender", "❌ Activity が取れないため、Gmail送信を開始できません")
@@ -79,12 +104,10 @@ object EmailSender {
         }
 
         if (hasGmailSendScope(activity)) {
-            // すでに権限あり → 非同期で送信
             performSendGmailAsync(activity, recipientEmail, subject, body) { ok ->
                 Log.d("EmailSender", if (ok) "📧 Gmail API 送信成功" else "❌ Gmail API 送信失敗")
             }
         } else {
-            // 権限なし → 同意フロー開始。完了後に自動送信するため一時保存。
             pendingEmail = PendingEmail(recipientEmail, subject, body)
             requestGmailSendScope(activity)
         }

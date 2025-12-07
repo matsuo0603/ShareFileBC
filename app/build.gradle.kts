@@ -110,6 +110,9 @@ dependencies {
     // JavaMail API - Gmail送信用
     implementation("com.sun.mail:javax.mail:1.6.2")
 
+    // HTTP クライアント
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // AndroidX
     implementation("androidx.core:core-ktx:1.10.1")
     implementation("androidx.appcompat:appcompat:1.6.1")

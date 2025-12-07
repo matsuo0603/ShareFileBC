@@ -67,16 +67,16 @@ class TapyrusWalletManager private constructor(context: Context) {
     }
 
     /**
-     * 現在パス (m/44'/0'/0'/0/0) の圧縮公開鍵HEXを返す。
+     * 現在パス (m/44'/0'/0'/0/0 など) の圧縮公開鍵HEXを返す。
      *
      * SecurePackage / ECIES で「相手に渡す公開鍵」として使う想定。
      */
-    fun getCurrentPublicKeyHex(): String {
-        val childXprv = getChildXprvForPath(DEFAULT_PATH)
+    fun getCurrentPublicKeyHex(path: String = DEFAULT_PATH): String {
+        val childXprv = getChildXprvForPath(path)
         val compressedPubKeyHex = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv)
         Log.d(
             TAG,
-            "currentPublicKeyHex(path=$DEFAULT_PATH) = $compressedPubKeyHex"
+            "currentPublicKeyHex(path=$path) = $compressedPubKeyHex"
         )
         return compressedPubKeyHex
     }
@@ -91,17 +91,20 @@ class TapyrusWalletManager private constructor(context: Context) {
      *    [version(4) | depth(1) | parentFP(4) | childNum(4) | chainCode(32) | 0x00 | privKey(32)]
      *    から「末尾の 32 byte 秘密鍵」を取り出している。
      */
-    fun getCurrentPrivateKeyHex(): String {
-        val childXprv = getChildXprvForPath(DEFAULT_PATH)
+    fun getCurrentPrivateKeyHex(path: String = DEFAULT_PATH): String {
+        val childXprv = getChildXprvForPath(path)
         val privKeyBytes = extractRawPrivateKeyFromXprv(childXprv)
         val privKeyHex = privKeyBytes.toHexString()
 
         Log.d(
             TAG,
-            "currentPrivateKeyHex(path=$DEFAULT_PATH) = $privKeyHex"
+            "currentPrivateKeyHex(path=$path) = ${maskSensitiveHex(privKeyHex)}"
         )
         return privKeyHex
     }
+
+    private fun maskSensitiveHex(hex: String, keep: Int = 6): String =
+        if (hex.length <= keep) hex else hex.take(keep) + "..."
 
     // ============================================================
     //  内部: xprv / pubkey / address ヘルパー

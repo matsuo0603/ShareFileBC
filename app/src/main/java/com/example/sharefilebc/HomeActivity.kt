@@ -9,14 +9,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import com.example.sharefilebc.managers.TapyrusWalletManager
+import com.example.sharefilebc.network.PublicKeyApiClient
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.common.api.Scope
 import com.google.api.services.drive.DriveScopes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class HomeActivity : ComponentActivity() {
 
@@ -39,13 +47,13 @@ class HomeActivity : ComponentActivity() {
             Log.e(TAG, "Tapyrus wallet initialization error", e)
         }
 
-        // 🔍 テスト用ログ：公開鍵 / 秘密鍵の確認
+        // 🔍 テスト用ログ：公開鍵 / 秘密鍵の確認（秘密鍵はマスクする）
         val walletManager = TapyrusWalletManager.getInstance(applicationContext)
         val pubHex = walletManager.getCurrentPublicKeyHex()
         Log.d(TAG, "Tapyrus public key HEX = $pubHex")
 
         val privHex = walletManager.getCurrentPrivateKeyHex()
-        Log.d(TAG, "Tapyrus private key HEX = $privHex")
+        Log.d(TAG, "Tapyrus private key HEX = ${maskHex(privHex)}")
 
 
         val deepLinkUri: Uri? = intent?.data
@@ -102,6 +110,20 @@ class HomeActivity : ComponentActivity() {
             return
         }
 
+        account.email?.let { email ->
+            lifecycleScope.launch {
+                val publicKeyHex = walletManager.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+                val api = PublicKeyApiClient()
+                val result = withContext(Dispatchers.IO) {
+                    api.registerMyPublicKey(email, publicKeyHex)
+                }
+                result.onSuccess {
+                    Log.d(TAG, "🟢 公開鍵を公開鍵レジストリに登録しました (${email})")
+                }.onFailure { e ->
+                    Log.e(TAG, "🟠 公開鍵の自動登録に失敗しました", e)
+                }
+            }
+        }
         setContent {
             ShareFileBCTheme {
                 // DeepLinkで来たときは Shared を初期表示、それ以外は Home
@@ -140,4 +162,6 @@ class HomeActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
     }
+    private fun maskHex(hex: String, keep: Int = 6): String =
+        if (hex.length <= keep) hex else hex.take(keep) + "..."
 }
