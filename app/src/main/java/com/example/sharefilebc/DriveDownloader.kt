@@ -22,7 +22,11 @@ import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.crypto.SecurePackage
 
 class DriveDownloader(private val context: Context) {
-
+    data class FileContext(
+        val parentFolderId: String,
+        val ownerName: String,
+        val ownerEmail: String?,
+    )
     // 表示用期限：アップロードから7日
     private val expirationMillis: Long = 7L * 24 * 60 * 60 * 1000
 
@@ -40,7 +44,31 @@ class DriveDownloader(private val context: Context) {
             credential
         ).setApplicationName("ShareFileBC").build()
     }
+    suspend fun resolveFileContext(fileId: String): FileContext? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val driveService = getDriveService() ?: return@withContext null
+                val fileMetadata = driveService.files().get(fileId)
+                    .setFields("id, parents, owners(displayName, emailAddress)")
+                    .execute()
 
+                val parentFolderId = fileMetadata.parents?.firstOrNull() ?: return@withContext null
+                val owner = fileMetadata.owners?.firstOrNull()
+                val ownerName = owner?.displayName?.takeIf(String::isNotBlank)
+                    ?: owner?.emailAddress
+                    ?: "Unknown Sender"
+
+                FileContext(
+                    parentFolderId = parentFolderId,
+                    ownerName = ownerName,
+                    ownerEmail = owner?.emailAddress
+                )
+            } catch (e: Exception) {
+                Log.e("DriveDownloader", "Error resolving file context", e)
+                null
+            }
+        }
+    }
     suspend fun getFolderStructure(folderId: String): FolderStructure? {
         return withContext(Dispatchers.IO) {
             try {

@@ -86,6 +86,9 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.WarningAmber
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -152,13 +155,28 @@ fun HomeScreen(
                         isUploading = false
                         when (result) {
                             is UploadResult.Success -> {
-                                val (fileName, _, folderId) = result
-                                EmailSender.sendEmailWithDriveLink(
-                                    context = context,
-                                    recipientEmail = target.email,
-                                    fileName = fileName,
-                                    folderId = folderId
-                                )
+                                val (fileName, fileId, folderId) = result
+                                val wallet = TapyrusWalletManager.getInstance(context)
+                                val senderPublicKey = runCatching {
+                                    wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+                                }.getOrNull()
+
+                                if (senderPublicKey != null) {
+                                    EmailSender.sendEmailWithDriveLink(
+                                        context = context,
+                                        recipientEmail = target.email,
+                                        fileName = fileName,
+                                        folderId = folderId,
+                                        fileId = fileId,
+                                        senderPublicKeyHex = senderPublicKey
+                                    )
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "送信者の公開鍵を取得できませんでした",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
 
                             is UploadResult.MissingRecipientPublicKey -> {
@@ -669,7 +687,22 @@ private fun SwipeRevealUserRow(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (user.publicKeyHex.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "相手の公開鍵がまだ登録されていません",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
+                val hasPublicKey = !user.publicKeyHex.isNullOrBlank()
+                Icon(
+                    imageVector = if (hasPublicKey) Icons.Outlined.VpnKey else Icons.Outlined.WarningAmber,
+                    contentDescription = if (hasPublicKey) "公開鍵登録済み" else "公開鍵未登録",
+                    tint = if (hasPublicKey) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
             }
         }
     }

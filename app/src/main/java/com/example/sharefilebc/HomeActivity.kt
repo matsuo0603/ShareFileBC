@@ -31,6 +31,12 @@ class HomeActivity : ComponentActivity() {
     companion object {
         private const val TAG = "HomeActivity"
     }
+    private data class DeepLinkParams(
+        val folderId: String?,
+        val fileId: String?,
+        val senderPublicKey: String?,
+        val recipientEmail: String?
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,10 +63,13 @@ class HomeActivity : ComponentActivity() {
 
 
         val deepLinkUri: Uri? = intent?.data
+        val deepLinkParams = parseDeepLink(deepLinkUri)
 
-        // HomeActivity に戻ってくる際に folderId を extra で受ける（OS差/端末差で data 欠落の対策）
+        // HomeActivity に戻ってくる際に folderId/fileId を extra で受ける（OS差/端末差で data欠落の対策）
         val folderIdFromExtra: String? = intent.getStringExtra("folderId")
-
+        val fileIdFromExtra: String? = intent.getStringExtra("fileId")
+        val senderKeyFromExtra: String? = intent.getStringExtra("senderPublicKey")
+        val recipientEmailFromExtra: String? = intent.getStringExtra("recipientEmail")
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
         val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
             if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
@@ -68,7 +77,13 @@ class HomeActivity : ComponentActivity() {
         // 旧形式: https://.../download?folderId=<ID>
         val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
 
-        val folderIdFromLink: String? = folderIdFromExtra ?: folderIdFromPath ?: folderIdFromQuery
+        val folderIdFromLink: String? = folderIdFromExtra
+            ?: folderIdFromPath
+            ?: folderIdFromQuery
+            ?: deepLinkParams.folderId
+        val fileIdFromLink: String? = fileIdFromExtra ?: deepLinkParams.fileId
+        val senderKeyFromLink: String? = senderKeyFromExtra ?: deepLinkParams.senderPublicKey
+        val recipientEmailFromLink: String? = recipientEmailFromExtra ?: deepLinkParams.recipientEmail
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
         Log.d(TAG, "🟩 onCreate - Intent data: $deepLinkUri")
@@ -76,16 +91,17 @@ class HomeActivity : ComponentActivity() {
             TAG,
             "🟩 onCreate - folderId(extra=$folderIdFromExtra, path=$folderIdFromPath, query=$folderIdFromQuery) -> PICKED: $folderIdFromLink"
         )
+        Log.d(TAG, "🟩 onCreate - fileId=$fileIdFromLink, senderKey=${senderKeyFromLink?.take(6)}...")
         Log.d(TAG, "🟩 onCreate - DisplayName: $displayNameFromIntent")
 
         // 目視確認用（端末上に出す）
         Toast.makeText(
             this,
-            "HomeActivity:\ndata=${deepLinkUri?.toString() ?: "null"}\nfolderId=$folderIdFromLink",
+            "HomeActivity:\ndata=${deepLinkUri?.toString() ?: "null"}\nfolderId=$folderIdFromLink\nfileId=$fileIdFromLink",
             Toast.LENGTH_LONG
         ).show()
 
-        val isFromDeepLink = folderIdFromLink != null
+        val isFromDeepLink = folderIdFromLink != null || fileIdFromLink != null
 
         // ✅ アカウント + Drive スコープを両方チェック
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
@@ -101,9 +117,12 @@ class HomeActivity : ComponentActivity() {
             Log.d(TAG, "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
             startActivity(
                 Intent(this, LoginActivity::class.java).apply {
-                    // Deep Link を data で、folderId を extra でも渡す（二重化で欠落対策）
+                    // Deep Link を data で、folderId や fileId を extra でも渡す（二重化で欠落対策）
                     deepLinkUri?.let { data = it }
                     folderIdFromLink?.let { putExtra("folderId", it) }
+                    fileIdFromLink?.let { putExtra("fileId", it) }
+                    senderKeyFromLink?.let { putExtra("senderPublicKey", it) }
+                    recipientEmailFromLink?.let { putExtra("recipientEmail", it) }
                 }
             )
             finish()
@@ -148,7 +167,10 @@ class HomeActivity : ComponentActivity() {
                         BottomTab.Shared -> {
                             SharedScreen(
                                 modifier = Modifier.padding(innerPadding),
-                                initialFolderId = if (isFromDeepLink) folderIdFromLink else null
+                                initialFolderId = if (isFromDeepLink) folderIdFromLink else null,
+                                initialFileId = fileIdFromLink,
+                                deepLinkSenderPublicKey = senderKeyFromLink,
+                                deepLinkRecipientEmail = recipientEmailFromLink
                             )
                         }
                     }
@@ -161,6 +183,30 @@ class HomeActivity : ComponentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
+    }
+    private fun parseDeepLink(uri: Uri?): DeepLinkParams {
+        if (uri == null) return DeepLinkParams(null, null, null, null)
+
+        val segments = uri.pathSegments.orEmpty()
+        val isSharePath = segments.firstOrNull() == "share"
+        val isFilePath = segments.firstOrNull() == "file"
+
+        val fileIdFromPath = when {
+            isSharePath && segments.size >= 2 -> segments[1]
+            isFilePath && segments.size >= 2 -> segments[1]
+            else -> null
+        }
+
+        val sender = uri.getQueryParameter("sender")
+        val to = uri.getQueryParameter("to")
+        val fileIdFromQuery = uri.getQueryParameter("fileId")
+
+        return DeepLinkParams(
+            folderId = uri.getQueryParameter("folderId"),
+            fileId = fileIdFromQuery ?: fileIdFromPath,
+            senderPublicKey = sender,
+            recipientEmail = to
+        )
     }
     private fun maskHex(hex: String, keep: Int = 6): String =
         if (hex.length <= keep) hex else hex.take(keep) + "..."

@@ -28,6 +28,8 @@ import com.example.sharefilebc.data.ReceivedFolderEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import kotlinx.coroutines.launch
+import com.example.sharefilebc.data.UserDao
+import android.util.Log
 
 private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
 
@@ -69,7 +71,12 @@ private data class ReceivedSenderDetailUi(
 )
 
 @Composable
-fun DownloadScreen(initialFolderId: String?) {
+fun DownloadScreen(
+    initialFolderId: String?,
+    initialFileId: String?,
+    deepLinkSenderPublicKey: String?,
+    deepLinkRecipientEmail: String?,
+) {
     val context = LocalContext.current
     val downloader = remember { DriveDownloader(context) }
     val coroutineScope = rememberCoroutineScope()
@@ -86,6 +93,7 @@ fun DownloadScreen(initialFolderId: String?) {
     var selectedSender by remember { mutableStateOf<String?>(null) }
     var detailState by remember { mutableStateOf<ReceivedSenderDetailUi?>(null) }
     val detailCache = remember { mutableStateMapOf<String, ReceivedSenderDetailUi>() }
+    var pendingAutoDownloadFileId by remember { mutableStateOf(initialFileId) }
 
     val senderGroups = remember(receivedFolders, users) {
         buildSenderSummaries(receivedFolders, users)
@@ -98,15 +106,48 @@ fun DownloadScreen(initialFolderId: String?) {
         }
     }
 
-    LaunchedEffect(initialFolderId) {
-        if (initialFolderId != null) {
+    LaunchedEffect(initialFolderId, initialFileId, deepLinkSenderPublicKey) {
+        if (initialFolderId != null || initialFileId != null) {
             isLoading = true
-            val result = handleInitialFolder(initialFolderId, downloader, receivedDao)
-            isLoading = false
-            if (result == null) {
-                needsLogin = true
+            needsLogin = false
+            Log.d(
+                "DownloadScreen",
+                "DeepLink start: folder=$initialFolderId, file=$initialFileId, senderKey=${deepLinkSenderPublicKey?.take(6)}, to=$deepLinkRecipientEmail"
+            )
+
+            if (initialFileId != null) {
+                val contextResult = downloader.resolveFileContext(initialFileId)
+                if (contextResult == null) {
+                    needsLogin = true
+                    isLoading = false
+                    return@LaunchedEffect
+                }
+
+                if (!deepLinkSenderPublicKey.isNullOrBlank()) {
+                    registerSenderPublicKey(
+                        userDao = userDao,
+                        senderName = contextResult.ownerName,
+                        senderEmail = contextResult.ownerEmail,
+                        publicKeyHex = deepLinkSenderPublicKey
+                    )
+                }
+
+                val result = handleInitialFolder(contextResult.parentFolderId, downloader, receivedDao)
+                isLoading = false
+                if (result == null) {
+                    needsLogin = true
+                } else {
+                    selectedSender = result.senderName
+                    pendingAutoDownloadFileId = initialFileId
+                }
             } else {
-                selectedSender = result.senderName
+                val result = handleInitialFolder(initialFolderId!!, downloader, receivedDao)
+                isLoading = false
+                if (result == null) {
+                    needsLogin = true
+                } else {
+                    selectedSender = result.senderName
+                }
             }
         }
     }
@@ -175,6 +216,17 @@ fun DownloadScreen(initialFolderId: String?) {
         )
         detailState = detail
         detailCache[sender] = detail
+    }
+    LaunchedEffect(detailState, pendingAutoDownloadFileId) {
+        val targetFileId = pendingAutoDownloadFileId ?: return@LaunchedEffect
+        val detail = detailState ?: return@LaunchedEffect
+        val exists = detail.dateGroups.any { group -> group.files.any { it.id == targetFileId } }
+        if (exists) {
+            isLoading = true
+            downloader.downloadFile(targetFileId)
+            isLoading = false
+            pendingAutoDownloadFileId = null
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -328,6 +380,36 @@ private suspend fun handleInitialFolder(
     }
 
     return InitialFolderResult(senderName = senderName)
+}
+private suspend fun registerSenderPublicKey(
+    userDao: UserDao,
+    senderName: String,
+    senderEmail: String?,
+    publicKeyHex: String,
+) {
+    senderEmail?.let { email ->
+        val existing = userDao.findByEmail(email)
+        if (existing != null) {
+            userDao.updatePublicKey(existing.id, publicKeyHex)
+            return
+        }
+    }
+
+    val existingByName = userDao.findByName(senderName)
+    if (existingByName != null) {
+        userDao.updatePublicKey(existingByName.id, publicKeyHex)
+        return
+    }
+
+    val resolvedName = senderName.ifBlank { senderEmail ?: "Unknown Sender" }
+    val resolvedEmail = senderEmail ?: senderName
+    userDao.insert(
+        UserEntity(
+            name = resolvedName,
+            email = resolvedEmail,
+            publicKeyHex = publicKeyHex
+        )
+    )
 }
 
 @Composable

@@ -50,6 +50,37 @@
                     android:host="sharefilebcapp.web.app"
                     android:pathPrefix="/folder" />
             </intent-filter>
+
+            <!-- 🔷 App Links（公開鍵共有 & ダウンロード遷移） -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="sharefilebcapp.web.app"
+                    android:pathPrefix="/share" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="sharefilebcapp.web.app"
+                    android:pathPrefix="/file" />
+            </intent-filter>
+
+            <!-- 🔷 カスタムスキーム（ホスティング経由で404になってもアプリへ誘導） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="myapp"
+                    android:host="open" />
+            </intent-filter>
         </activity>
 
         <!-- 🔓 Login -->

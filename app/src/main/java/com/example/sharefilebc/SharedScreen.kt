@@ -1,9 +1,9 @@
 package com.example.sharefilebc
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -33,18 +33,36 @@ import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import com.example.sharefilebc.ui.theme.SharedScreenDimens
 
+// 送信・受信 のタブ
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
     Received("受信");
 }
 
+/**
+ * 共有タブ全体の画面。
+ *
+ * - initialFolderId / initialFileId / deepLinkSenderPublicKey / deepLinkRecipientEmail は
+ *   Deep Link で開かれたときだけ埋まる想定なので、すべて null 許容 & デフォルト null にしておく。
+ * - 既存の呼び出しコードは SharedScreen() / SharedScreen(initialFolderId = ...) だけでもOK。
+ */
 @Composable
 fun SharedScreen(
     modifier: Modifier = Modifier,
-    initialFolderId: String?
+    initialFolderId: String? = null,
+    initialFileId: String? = null,
+    deepLinkSenderPublicKey: String? = null,
+    deepLinkRecipientEmail: String? = null,
 ) {
-    var selectedTab by remember(initialFolderId) {
-        mutableStateOf(if (initialFolderId != null) SharedInnerTab.Received else SharedInnerTab.Sent)
+    // DeepLink でフォルダ or ファイル指定があれば「受信」タブから開始
+    var selectedTab by remember(initialFolderId, initialFileId) {
+        mutableStateOf(
+            if (initialFolderId != null || initialFileId != null) {
+                SharedInnerTab.Received
+            } else {
+                SharedInnerTab.Sent
+            }
+        )
     }
 
     Column(
@@ -76,7 +94,10 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    SentFilesScreen(modifier = Modifier.fillMaxSize())
+                    // 送信済みファイル一覧（既存の Composable をそのまま呼ぶ）
+                    SentFilesScreen(
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
 
@@ -86,7 +107,16 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    DownloadScreen(initialFolderId = initialFolderId)
+                    // 受信タブでは、DeepLink から渡ってきた情報を DownloadScreen に渡す想定。
+                    // いまは initialFolderId だけを使っている既存実装があるので、
+                    // それを壊さないように initialFolderId だけ渡しておく。
+                    DownloadScreen(
+                        initialFolderId = initialFolderId,
+                        // DeepLink 関連の引数は、DownloadScreen 側で対応したタイミングで使う前提。
+                        initialFileId = initialFileId,
+                        deepLinkSenderPublicKey = deepLinkSenderPublicKey,
+                        deepLinkRecipientEmail = deepLinkRecipientEmail,
+                    )
                 }
             }
         }
@@ -100,7 +130,7 @@ private fun SharedTabSelector(
 ) {
     val containerShape = RoundedCornerShape(SharedScreenDimens.TabContainerCorner)
     val indicatorShape = RoundedCornerShape(SharedScreenDimens.TabItemCorner)
-    val tabs = SharedInnerTab.entries
+    val tabs = SharedInnerTab.entries.toList()
     val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
 
     Box(
@@ -124,6 +154,7 @@ private fun SharedTabSelector(
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
+                // 背景のインジケータ
                 Box(
                     modifier = Modifier
                         .offset(x = animatedOffset)
@@ -146,7 +177,9 @@ private fun SharedTabSelector(
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
-                                ) { onSelected(tab) }
+                                ) {
+                                    onSelected(tab)
+                                }
                                 .padding(vertical = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {

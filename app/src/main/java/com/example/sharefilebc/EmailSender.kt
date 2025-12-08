@@ -15,71 +15,111 @@ import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.gmail.Gmail
 import com.google.api.services.gmail.GmailScopes
 import com.google.api.services.gmail.model.Message
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import kotlinx.coroutines.* // ★ 非同期実行に使用
 
 /**
- * ✉️ Gmail API（gmail.send）で自動送信する実装に統一。
- * 旧：Intentでメールアプリを開く機能は削除。
+ * Gmail API（gmail.send）を使ってメールを自動送信するためのユーティリティ。
  *
- * 呼び出し方：
- *  - HomeScreen などから sendAuto(...) または sendEmailWithDriveLink(...) を呼ぶ
- *  - 初回は gmail.send の追加同意が必要 → HomeActivity#onActivityResult で結果を受け、
- *    EmailSender.onActivityResultBridge(...) に橋渡し
+ * - sendAuto(...) は互換用の簡易 API
+ * - sendEmailWithDriveLink(...) は fileId / senderPublicKeyHex を含む「新仕様」のリンクを送る
+ *   ただしどちらも引数はオプションにして、既存の呼び出しが壊れないようにする。
  */
 object EmailSender {
 
-    // 内部用の IO スコープ（プロセス存続中有効）
+    // バックグラウンド送信用スコープ
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // =========================
-    // 公開API
-    // =========================
+    // ----------------------------------------------------
+    // 公開 API
+    // ----------------------------------------------------
 
-    /** 互換用（呼び出し側が Activity を持っている場合はこちらでもOK） */
+    /**
+     * 旧来の呼び出し用のラッパー。
+     * いまは folderId だけ渡されている呼び出しがあるので、
+     * 内部で fileId / senderPublicKeyHex なしで sendEmailWithDriveLink を呼ぶ。
+     */
     fun sendAuto(
         activity: Activity,
         recipientEmail: String,
         fileName: String,
         folderId: String
-    ) = sendEmailWithDriveLink(
-        context = activity,
-        recipientEmail = recipientEmail,
-        fileName = fileName,
-        folderId = folderId
-    )
+    ) {
+        sendEmailWithDriveLink(
+            context = activity,
+            recipientEmail = recipientEmail,
+            fileName = fileName,
+            folderId = folderId
+            // fileId / senderPublicKeyHex は null のまま（旧仕様フォールバック）
+        )
+    }
 
     /**
-     * 共有リンクを本文に含めて Gmail API で自動送信。
-     * 権限がなければ追加同意を開始し、同意後に自動送信する。
+     * 共有リンクを本文に含めて Gmail API で自動送信する。
+     *
+     * @param fileId             DeepLink 用のファイルID（無ければ null）
+     * @param senderPublicKeyHex 公開鍵自動共有のための送信者公開鍵（無ければ null）
+     *
+     * fileId と senderPublicKeyHex の **両方が非 null** のときだけ、新しい
+     * `/share?sender=...&to=...&fileId=...` 形式のリンクを生成する。
+     * どちらかが null の場合は、従来通り「フォルダへのリンク」だけを本文に書く。
      */
     fun sendEmailWithDriveLink(
         context: Context,
         recipientEmail: String,
         fileName: String,
-        folderId: String
+        folderId: String,
+        fileId: String? = null,
+        senderPublicKeyHex: String? = null
     ) {
         val subject = "ファイル共有: $fileName"
-        val link = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
+
+        // 旧仕様のフォルダ直リンク（常に用意しておく）
+        val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
+
         val body = buildString {
-            appendLine("以下のリンクをタップすると、共有フォルダを開けます：")
-            appendLine(link)
-            appendLine()
-            append("※ アプリ未インストール時はWebページが開きます。")
+            if (fileId != null && senderPublicKeyHex != null) {
+                // ✅ 新仕様：公開鍵 + fileId つきの /share リンク
+                val shareUrl = buildString {
+                    append("https://sharefilebcapp.web.app/share?")
+                    append("sender=").append(Uri.encode(senderPublicKeyHex))
+                    append("&to=").append(Uri.encode(recipientEmail))
+                    append("&fileId=").append(Uri.encode(fileId))
+                }
+
+                appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")
+                appendLine(shareUrl)
+                appendLine()
+                appendLine("リンクを開くとアプリが起動し、復号・ダウンロード画面へ直接遷移します。")
+                appendLine()
+                appendLine("ブラウザのみでアクセスしたい場合は、次のフォルダリンクを利用できます：")
+                appendLine(fallbackFolderLink)
+            } else {
+                // ✅ 旧仕様：フォルダへの直接リンクのみ
+                appendLine("以下のリンクから共有フォルダにアクセスできます。")
+                appendLine(fallbackFolderLink)
+            }
         }
+
         sendEmail(context, recipientEmail, subject, body)
     }
 
-    /** 公開鍵登録用のリンクをメールで送付する */
+    /**
+     * 公開鍵登録だけを促すメール（必要なら使用）
+     */
     fun sendPublicKeyRegistrationEmail(
         context: Context,
         recipientEmail: String,
         registrationUrl: String,
-        senderEmail: String?
+        senderEmail: String? = null
     ) {
         val subject = "公開鍵登録のお願い"
         val body = buildString {
@@ -96,10 +136,19 @@ object EmailSender {
         sendEmail(context, recipientEmail, subject, body)
     }
 
-    private fun sendEmail(context: Context, recipientEmail: String, subject: String, body: String) {
+    // ----------------------------------------------------
+    // 内部実装
+    // ----------------------------------------------------
+
+    private fun sendEmail(
+        context: Context,
+        recipientEmail: String,
+        subject: String,
+        body: String
+    ) {
         val activity = context as? Activity
         if (activity == null) {
-            Log.e("EmailSender", "❌ Activity が取れないため、Gmail送信を開始できません")
+            Log.e("EmailSender", "❌ Activity コンテキストでないため Gmail 送信を開始できません")
             return
         }
 
@@ -108,30 +157,31 @@ object EmailSender {
                 Log.d("EmailSender", if (ok) "📧 Gmail API 送信成功" else "❌ Gmail API 送信失敗")
             }
         } else {
+            // 権限同意待ちのメールとして退避
             pendingEmail = PendingEmail(recipientEmail, subject, body)
             requestGmailSendScope(activity)
         }
     }
 
-    /** HomeActivity の onActivityResult から呼ぶ。権限同意OKなら保留メールを送信。 */
+    /**
+     * HomeActivity の onActivityResult から呼び出して、
+     * Gmail 送信スコープに同意したあと保留メールを送信する。
+     */
     fun onActivityResultBridge(context: Context, requestCode: Int, resultCode: Int) {
-        val ok = (requestCode == RC_GMAIL_SEND_SCOPE && resultCode == Activity.RESULT_OK)
-        if (!ok) return
+        if (requestCode != RC_GMAIL_SEND_SCOPE || resultCode != Activity.RESULT_OK) return
 
-        pendingEmail?.let { mail ->
-            // 送信後は必ずクリア
-            pendingEmail = null
-            performSendGmailAsync(context, mail.to, mail.subject, mail.body) { sent ->
-                Log.d("EmailSender", if (sent) "📧 同意後にGmail送信成功" else "❌ 同意後にGmail送信失敗")
-            }
+        val mail = pendingEmail ?: return
+        pendingEmail = null
+
+        performSendGmailAsync(context, mail.to, mail.subject, mail.body) { ok ->
+            Log.d(
+                "EmailSender",
+                if (ok) "📧 同意後に Gmail 送信成功" else "❌ 同意後に Gmail 送信失敗"
+            )
         }
     }
 
-    // =========================
-    // 内部実装
-    // =========================
-
-    /** ★ メインスレッドで実行しないよう、IO スレッドで送信して結果だけ Main に返す */
+    // Gmail API 実送信（IO スレッド）
     private fun performSendGmailAsync(
         context: Context,
         to: String,
@@ -146,14 +196,16 @@ object EmailSender {
                 return@launch
             }
 
-            // 件名を MIME ヘッダ用に UTF-8 Base64 エンコード
+            // 件名を UTF-8 Base64 (RFC2047) でエンコード
             val encodedSubject = "=?UTF-8?B?" +
-                    Base64.encodeToString(subject.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP) +
+                    Base64.encodeToString(
+                        subject.toByteArray(StandardCharsets.UTF_8),
+                        Base64.NO_WRAP
+                    ) +
                     "?="
 
             val dateHeader = formattedCurrentRfc2822Date()
 
-            // CRLF で MIME 準拠の raw メールを構築
             val raw = buildString {
                 append("To: ").append(to).append("\r\n")
                 append("Subject: ").append(encodedSubject).append("\r\n")
@@ -165,7 +217,7 @@ object EmailSender {
                 append(body)
             }
 
-            // Gmail API は Base64URL（URL_SAFE | NO_WRAP）を要求
+            // Gmail API は Base64 URL_SAFE + NO_WRAP を要求
             val base64url = Base64.encodeToString(
                 raw.toByteArray(StandardCharsets.UTF_8),
                 Base64.URL_SAFE or Base64.NO_WRAP
@@ -175,7 +227,7 @@ object EmailSender {
                 setRaw(base64url)
             }
 
-            val result = try {
+            val ok = try {
                 service.users().messages().send("me", message).execute()
                 true
             } catch (e: Exception) {
@@ -183,14 +235,18 @@ object EmailSender {
                 false
             }
 
-            withContext(Dispatchers.Main) { callback(result) }
+            withContext(Dispatchers.Main) {
+                callback(ok)
+            }
         }
     }
 
     private fun getGmailService(context: Context): Gmail? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
+
         val credential = GoogleAccountCredential.usingOAuth2(
-            context, listOf(GmailScopes.GMAIL_SEND)
+            context,
+            listOf(GmailScopes.GMAIL_SEND)
         ).apply {
             selectedAccount = account.account
         }
@@ -199,11 +255,15 @@ object EmailSender {
             NetHttpTransport(),
             GsonFactory.getDefaultInstance(),
             credential
-        ).setApplicationName("ShareFileBC").build()
+        )
+            .setApplicationName("ShareFileBC")
+            .build()
     }
 
-    // ---- 権限ハンドリング ----
+    // ---------------------- 権限まわり ----------------------
+
     private const val RC_GMAIL_SEND_SCOPE = 0x4753 // "GS"
+
     private val gmailSendScope = Scope(GmailScopes.GMAIL_SEND)
 
     private fun hasGmailSendScope(activity: Activity): Boolean {
@@ -221,11 +281,18 @@ object EmailSender {
         )
     }
 
-    // ---- 同意待ちメール（var にすること。val だと再代入不可） ----
-    private data class PendingEmail(val to: String, val subject: String, val body: String)
+    // ---------------------- 保留メール ----------------------
+
+    private data class PendingEmail(
+        val to: String,
+        val subject: String,
+        val body: String
+    )
+
     private var pendingEmail: PendingEmail? = null
 
-    // ---- Date ヘッダ生成 ----
+    // ---------------------- Date ヘッダ ----------------------
+
     private fun formattedCurrentRfc2822Date(): String {
         val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", Locale.US)
         sdf.timeZone = TimeZone.getDefault()
