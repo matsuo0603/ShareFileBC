@@ -39,6 +39,8 @@ import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -64,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -72,9 +75,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.data.DriveServiceHelper
+import com.example.sharefilebc.data.EmailKeyEntity
+import com.example.sharefilebc.data.MyPublicKeyDao
+import com.example.sharefilebc.data.MyPublicKeyEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.managers.TapyrusWalletManager
-import com.example.sharefilebc.network.PublicKeyApiClient
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -86,9 +92,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import androidx.compose.ui.graphics.Color
-import androidx.compose.material.icons.outlined.VpnKey
-import androidx.compose.material.icons.outlined.WarningAmber
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -102,16 +105,22 @@ fun HomeScreen(
 
     val db = remember { AppDatabase.getDatabase(context) }
     val userDao = db.userDao()
+    val emailKeyDao = db.emailKeyDao()
+    val myPublicKeyDao = db.myPublicKeyDao()
+
     val driveUploader = remember { DriveUploader(context) }
-    val publicKeyApi = remember { PublicKeyApiClient() }
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
+    var emailKeys by remember { mutableStateOf(listOf<EmailKeyEntity>()) }
     var isUploading by remember { mutableStateOf(false) }
+    var isRegistering by remember { mutableStateOf(false) }
     var showAccountScreen by remember { mutableStateOf(false) }
     var tokenThreshold by remember { mutableStateOf(1) }
     var sendFee by remember { mutableStateOf(1) }
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
+    var registrationSnackbarMessage by remember { mutableStateOf<String?>(null) }
+
 
     // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
     var walletAddress by remember { mutableStateOf<String?>(null) }
@@ -215,6 +224,10 @@ fun HomeScreen(
         userDao.getAll().collectLatest { list -> users = list }
     }
 
+    LaunchedEffect(Unit) {
+        emailKeyDao.getAll().collectLatest { list -> emailKeys = list }
+    }
+
     // TapyrusWalletManager から現在の受取アドレスを 1 回取得
     LaunchedEffect(Unit) {
         val manager = TapyrusWalletManager.getInstance(context)
@@ -226,6 +239,12 @@ fun HomeScreen(
         walletAddress = addr
     }
 
+    LaunchedEffect(registrationSnackbarMessage) {
+        registrationSnackbarMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            registrationSnackbarMessage = null
+        }
+    }
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.surface,
@@ -309,6 +328,19 @@ fun HomeScreen(
                 )
             }
 
+            if (isRegistering) {
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "共有相手を登録しています...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             if (users.isEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 Text(
@@ -318,6 +350,7 @@ fun HomeScreen(
                 )
             }
 
+            val registeredEmailKeys = remember(emailKeys) { emailKeys.associateBy { it.email } }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 6.dp)
@@ -325,6 +358,7 @@ fun HomeScreen(
                 items(users, key = { it.id }) { user ->
                     SwipeRevealUserRow(
                         user = user,
+                        hasRegisteredKey = registeredEmailKeys.containsKey(user.email),
                         onDelete = {
                             scope.launch {
                                 withContext(Dispatchers.IO) { userDao.deleteByName(user.name) }
@@ -387,31 +421,53 @@ fun HomeScreen(
                             val name = addName.trim()
                             val email = addEmail.trim()
                             scope.launch {
-                                val userId = withContext(Dispatchers.IO) {
-                                    userDao.insert(
-                                        UserEntity(
-                                            name = name,
-                                            email = email,
-                                            publicKeyHex = null
+                                isRegistering = true
+                                val registrationUrl = runCatching {
+                                    val folderId = withContext(Dispatchers.IO) {
+                                        DriveServiceHelper.createUserFolder(context, name)
+                                    }
+                                    withContext(Dispatchers.IO) {
+                                        userDao.upsertByEmail(
+                                            UserEntity(
+                                                name = name,
+                                                email = email,
+                                                folderIDFromMe = folderId,
+                                                publicKeyHex = null
+                                            )
                                         )
-                                    ).toInt()
                                 }
-                                addName = ""
-                                addEmail = ""
-                                showAddDialog = false
-                                snackbarHostState.showSnackbar("登録が完了しました")
-                                val fetchResult = withContext(Dispatchers.IO) {
-                                    publicKeyApi.fetchPublicKey(email)
+                                val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
+                                    resolveMyKeys(
+                                        myPublicKeyDao,
+                                        context
+                                    )
                                 }
-                                fetchResult.onSuccess { key ->
-                                    if (key != null) {
-                                        withContext(Dispatchers.IO) {
-                                            userDao.updatePublicKey(userId, key)
-                                        }
-                                        snackbarHostState.showSnackbar("公開鍵を自動取得しました")
+                                PublicKeyLinkBuilder.build(
+                                    email = accountEmail ?: email,
+                                    derivedPublicKey = derivedPublicKey,
+                                    trustLayerPublicKey = trustLayerPublicKey,
+                                    folderId = folderId
+                                )
+                                }
+                                isRegistering = false
+
+                                registrationUrl.onSuccess { url ->
+                                    addName = ""
+                                    addEmail = ""
+                                    showAddDialog = false
+                                    snackbarHostState.showSnackbar("登録が完了しました")
+                                    if (url != null) {
+                                        EmailSender.sendPublicKeyRegistrationEmail(
+                                            context = context,
+                                            recipientEmail = email,
+                                            registrationUrl = url,
+                                            senderEmail = accountEmail
+                                        )
+                                        registrationSnackbarMessage = "公開鍵登録リンクを送信しました"
                                     }
                                 }.onFailure { e ->
-                                    Log.e("HomeScreen", "公開鍵の取得に失敗しました", e)
+                                    Log.e("HomeScreen", "共有相手登録に失敗しました", e)
+                                    snackbarHostState.showSnackbar("登録に失敗しました")
                                 }
                             }
                         }
@@ -587,6 +643,7 @@ private fun WalletAddressCard(
 @Composable
 private fun SwipeRevealUserRow(
     user: UserEntity,
+    hasRegisteredKey: Boolean,
     onDelete: () -> Unit,
     onShare: () -> Unit,
 ) {
@@ -687,7 +744,7 @@ private fun SwipeRevealUserRow(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (user.publicKeyHex.isNullOrBlank()) {
+                    if (!hasRegisteredKey) {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             text = "相手の公開鍵がまだ登録されていません",
@@ -696,14 +753,36 @@ private fun SwipeRevealUserRow(
                         )
                     }
                 }
-                val hasPublicKey = !user.publicKeyHex.isNullOrBlank()
                 Icon(
-                    imageVector = if (hasPublicKey) Icons.Outlined.VpnKey else Icons.Outlined.WarningAmber,
-                    contentDescription = if (hasPublicKey) "公開鍵登録済み" else "公開鍵未登録",
-                    tint = if (hasPublicKey) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    imageVector = if (hasRegisteredKey) Icons.Outlined.VpnKey else Icons.Outlined.WarningAmber,
+                    contentDescription = if (hasRegisteredKey) "公開鍵登録済み" else "公開鍵未登録",
+                    tint = if (hasRegisteredKey) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(start = 12.dp)
                 )
             }
         }
     }
+}
+
+private suspend fun resolveMyKeys(
+    myPublicKeyDao: MyPublicKeyDao,
+    context: android.content.Context
+): Pair<String, String> {
+    val wallet = TapyrusWalletManager.getInstance(context)
+    val existing = myPublicKeyDao.getPrimary()
+    val trustLayer = existing?.trustLayerPublicKey
+        ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+    val derived = existing?.derivedPublicKey
+        ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
+
+    if (existing == null || existing.trustLayerPublicKey != trustLayer || existing.derivedPublicKey != derived) {
+        myPublicKeyDao.upsert(
+            MyPublicKeyEntity(
+                trustLayerPublicKey = trustLayer,
+                derivedPublicKey = derived
+            )
+        )
+    }
+
+    return trustLayer to derived
 }

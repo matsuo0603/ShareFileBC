@@ -390,20 +390,20 @@ private suspend fun registerSenderPublicKey(
     senderEmail?.let { email ->
         val existing = userDao.findByEmail(email)
         if (existing != null) {
-            userDao.updatePublicKey(existing.id, publicKeyHex)
+            userDao.updatePublicKeyByEmail(email, publicKeyHex)
             return
         }
     }
 
     val existingByName = userDao.findByName(senderName)
     if (existingByName != null) {
-        userDao.updatePublicKey(existingByName.id, publicKeyHex)
+        userDao.updatePublicKeyByEmail(existingByName.email, publicKeyHex)
         return
     }
 
     val resolvedName = senderName.ifBlank { senderEmail ?: "Unknown Sender" }
     val resolvedEmail = senderEmail ?: senderName
-    userDao.insert(
+    userDao.upsertByEmail(
         UserEntity(
             name = resolvedName,
             email = resolvedEmail,

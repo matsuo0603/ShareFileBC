@@ -25,6 +25,8 @@ import com.google.api.services.drive.DriveScopes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.data.EmailKeyEntity
 
 class HomeActivity : ComponentActivity() {
 
@@ -64,6 +66,7 @@ class HomeActivity : ComponentActivity() {
 
         val deepLinkUri: Uri? = intent?.data
         val deepLinkParams = parseDeepLink(deepLinkUri)
+        val pubKeyLink = PublicKeyLinkBuilder.parse(deepLinkUri)
 
         // HomeActivity に戻ってくる際に folderId/fileId を extra で受ける（OS差/端末差で data欠落の対策）
         val folderIdFromExtra: String? = intent.getStringExtra("folderId")
@@ -103,6 +106,27 @@ class HomeActivity : ComponentActivity() {
 
         val isFromDeepLink = folderIdFromLink != null || fileIdFromLink != null
 
+        if (pubKeyLink != null) {
+            lifecycleScope.launch {
+                val db = AppDatabase.getDatabase(applicationContext)
+                withContext(Dispatchers.IO) {
+                    db.emailKeyDao().upsert(
+                        EmailKeyEntity(
+                            email = pubKeyLink.email,
+                            derivedPublicKey = pubKeyLink.derivedPublicKey,
+                            trustLayerPublicKey = pubKeyLink.trustLayerPublicKey,
+                            folderIDFromPartner = pubKeyLink.folderId,
+                            isRefundRejected = false
+                        )
+                    )
+                }
+                Toast.makeText(
+                    this@HomeActivity,
+                    "公開鍵を登録しました",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
         // ✅ アカウント + Drive スコープを両方チェック
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
         val hasDriveScope = account?.let {

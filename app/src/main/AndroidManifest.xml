@@ -62,6 +62,17 @@
                     android:pathPrefix="/share" />
             </intent-filter>
 
+            <!-- 🔷 公開鍵登録用 Deep Link -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="sharefilebcapp.web.app"
+                    android:pathPrefix="/pubkey" />
+            </intent-filter>
+
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

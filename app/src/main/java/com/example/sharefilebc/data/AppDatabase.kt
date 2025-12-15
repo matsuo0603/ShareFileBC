@@ -5,11 +5,28 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [UserEntity::class, SharedFolderEntity::class, ReceivedFolderEntity::class], version = 10)
+@Database(
+    entities = [
+        UserEntity::class,
+        SharedFolderEntity::class,
+        ReceivedFolderEntity::class,
+        EmailKeyEntity::class,
+        MyPublicKeyEntity::class,
+        MySharedFolderEntity::class,
+        ReceivedFileEntity::class,
+        RefundTaskEntity::class,
+    ],
+    version = 11
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
     abstract fun sharedFolderDao(): SharedFolderDao
     abstract fun receivedFolderDao(): ReceivedFolderDao
+    abstract fun emailKeyDao(): EmailKeyDao
+    abstract fun myPublicKeyDao(): MyPublicKeyDao
+    abstract fun mySharedFolderDao(): MySharedFolderDao
+    abstract fun receivedFileDao(): ReceivedFileDao
+    abstract fun refundTaskDao(): RefundTaskDao
 
     companion object {
         @Volatile

@@ -17,6 +17,7 @@ import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.Permission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.example.sharefilebc.data.MyPublicKeyEntity
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
@@ -78,6 +79,7 @@ class DriveUploader(private val context: Context) {
 
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
                 val wallet = TapyrusWalletManager.getInstance(context)
+                val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
 
                 var recipientPublicKeyHex = recipient.publicKeyHex?.takeIf { it.isNotBlank() }
                 if (recipientPublicKeyHex == null) {
@@ -89,7 +91,12 @@ class DriveUploader(private val context: Context) {
                 }
                 if (recipientPublicKeyHex == null) {
                     return@withContext UploadResult.MissingRecipientPublicKey(
-                        buildRegistrationLink(recipient.email, wallet)
+                        buildRegistrationLink(
+                            requesterEmail = GoogleSignIn.getLastSignedInAccount(context)?.email,
+                            derivedPublicKey = derivedPublicKey,
+                            trustLayerPublicKey = trustLayerPublicKey,
+                            folderId = recipientFolderId
+                        )
                     )
                 }
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
@@ -151,26 +158,45 @@ class DriveUploader(private val context: Context) {
         publicKeyHex: String
     ) {
         val dao = db.userDao()
-        if (recipient.id != 0) {
-            dao.updatePublicKey(recipient.id, publicKeyHex)
-        } else {
-            dao.findByEmail(recipient.email)?.let { dao.updatePublicKey(it.id, publicKeyHex) }
+        dao.updatePublicKeyByEmail(recipient.email, publicKeyHex)
+    }
+
+    private suspend fun resolveMyKeys(
+        db: AppDatabase,
+        wallet: TapyrusWalletManager
+    ): Pair<String, String> {
+        val myKeyDao = db.myPublicKeyDao()
+        val existing = myKeyDao.getPrimary()
+        val trustLayer = existing?.trustLayerPublicKey
+            ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+        val derived = existing?.derivedPublicKey
+            ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
+
+        if (existing == null || existing.trustLayerPublicKey != trustLayer || existing.derivedPublicKey != derived) {
+            myKeyDao.upsert(
+                MyPublicKeyEntity(
+                    trustLayerPublicKey = trustLayer,
+                    derivedPublicKey = derived
+                )
+            )
         }
+
+        return trustLayer to derived
     }
 
     private fun buildRegistrationLink(
-        recipientEmail: String,
-        wallet: TapyrusWalletManager
+        requesterEmail: String?,
+        derivedPublicKey: String,
+        trustLayerPublicKey: String,
+        folderId: String
     ): String? {
-        val requesterEmail = GoogleSignIn.getLastSignedInAccount(context)?.email ?: return null
-        val requesterPubKey = runCatching { wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0") }
-            .getOrNull()
-            ?: return null
-
-        val encodedEmail = Uri.encode(recipientEmail)
-        val encodedRequester = Uri.encode(requesterEmail)
-        val encodedPubKey = Uri.encode(requesterPubKey)
-        return "https://sharefilebcapp.web.app/pubkey/register?email=$encodedEmail&requester=$encodedRequester&pubKeyHex=$encodedPubKey"
+        requesterEmail ?: return null
+        return PublicKeyLinkBuilder.build(
+            email = requesterEmail,
+            derivedPublicKey = derivedPublicKey,
+            trustLayerPublicKey = trustLayerPublicKey,
+            folderId = folderId
+        )
     }
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {
