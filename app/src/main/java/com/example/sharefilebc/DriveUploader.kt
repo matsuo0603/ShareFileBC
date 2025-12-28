@@ -6,24 +6,24 @@ import android.provider.OpenableColumns
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.SharedFolderEntity
-import com.example.sharefilebc.network.PublicKeyApiClient
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
+import com.example.sharefilebc.data.EmailKeyEntity
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File
 import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.Permission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.example.sharefilebc.data.MyPublicKeyEntity
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.crypto.SecurePackage
+import com.example.sharefilebc.data.MyPublicKeyEntity
 
 sealed class UploadResult {
     data class Success(val fileName: String, val fileId: String, val folderId: String) : UploadResult()
@@ -32,9 +32,6 @@ sealed class UploadResult {
 }
 
 class DriveUploader(private val context: Context) {
-
-    private val publicKeyApi = PublicKeyApiClient()
-
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
@@ -53,6 +50,7 @@ class DriveUploader(private val context: Context) {
     suspend fun uploadFileAndRecordWithSharing(
         fileUri: Uri,
         recipient: UserEntity,
+        recipientKey: EmailKeyEntity,
         db: AppDatabase
     ): UploadResult {
         return withContext(Dispatchers.IO) {
@@ -81,23 +79,9 @@ class DriveUploader(private val context: Context) {
                 val wallet = TapyrusWalletManager.getInstance(context)
                 val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
 
-                var recipientPublicKeyHex = recipient.publicKeyHex?.takeIf { it.isNotBlank() }
+                val recipientPublicKeyHex = recipientKey.derivedPublicKey.takeIf { it.isNotBlank() }
                 if (recipientPublicKeyHex == null) {
-                    val fetched = publicKeyApi.fetchPublicKey(recipient.email).getOrNull()
-                    if (fetched != null) {
-                        recipientPublicKeyHex = fetched
-                        updateRecipientPublicKey(db, recipient, fetched)
-                    }
-                }
-                if (recipientPublicKeyHex == null) {
-                    return@withContext UploadResult.MissingRecipientPublicKey(
-                        buildRegistrationLink(
-                            requesterEmail = GoogleSignIn.getLastSignedInAccount(context)?.email,
-                            derivedPublicKey = derivedPublicKey,
-                            trustLayerPublicKey = trustLayerPublicKey,
-                            folderId = recipientFolderId
-                        )
-                    )
+                    return@withContext UploadResult.MissingRecipientPublicKey(null)
                 }
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
@@ -152,15 +136,6 @@ class DriveUploader(private val context: Context) {
         }
     }
 
-    private suspend fun updateRecipientPublicKey(
-        db: AppDatabase,
-        recipient: UserEntity,
-        publicKeyHex: String
-    ) {
-        val dao = db.userDao()
-        dao.updatePublicKeyByEmail(recipient.email, publicKeyHex)
-    }
-
     private suspend fun resolveMyKeys(
         db: AppDatabase,
         wallet: TapyrusWalletManager
@@ -182,21 +157,6 @@ class DriveUploader(private val context: Context) {
         }
 
         return trustLayer to derived
-    }
-
-    private fun buildRegistrationLink(
-        requesterEmail: String?,
-        derivedPublicKey: String,
-        trustLayerPublicKey: String,
-        folderId: String
-    ): String? {
-        requesterEmail ?: return null
-        return PublicKeyLinkBuilder.build(
-            email = requesterEmail,
-            derivedPublicKey = derivedPublicKey,
-            trustLayerPublicKey = trustLayerPublicKey,
-            folderId = folderId
-        )
     }
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {

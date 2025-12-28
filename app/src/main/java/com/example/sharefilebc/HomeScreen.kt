@@ -146,18 +146,20 @@ fun HomeScreen(
     }
     var isBalanceVisible by remember { mutableStateOf(false) }
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
-
+    var selectedEmailKey by remember { mutableStateOf<EmailKeyEntity?>(null) }
     val openFileLauncher = rememberLauncherForActivityResult(
         contract = FilePickerContract(),
         onResult = { uri: Uri? ->
             uri ?: return@rememberLauncherForActivityResult
             val target = selectedUser ?: return@rememberLauncherForActivityResult
+            val recipientKey = selectedEmailKey ?: return@rememberLauncherForActivityResult
             scope.launch {
                 isUploading = true
                 withContext(Dispatchers.IO) {
                     val result = driveUploader.uploadFileAndRecordWithSharing(
                         fileUri = uri,
                         recipient = target,
+                        recipientKey = recipientKey,
                         db = db
                     )
                     withContext(Dispatchers.Main) {
@@ -316,6 +318,7 @@ fun HomeScreen(
 
             Spacer(Modifier.height(16.dp))
 
+            selectedEmailKey = null
             if (isUploading) {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -356,9 +359,13 @@ fun HomeScreen(
                 contentPadding = PaddingValues(vertical = 6.dp)
             ) {
                 items(users, key = { it.id }) { user ->
+                    val emailKey = registeredEmailKeys[user.email]
+                    val hasRegisteredKey = emailKey != null &&
+                            emailKey.derivedPublicKey.isNotBlank() &&
+                            emailKey.trustLayerPublicKey.isNotBlank()
                     SwipeRevealUserRow(
                         user = user,
-                        hasRegisteredKey = registeredEmailKeys.containsKey(user.email),
+                        hasRegisteredKey = hasRegisteredKey,
                         onDelete = {
                             scope.launch {
                                 withContext(Dispatchers.IO) { userDao.deleteByName(user.name) }
@@ -366,8 +373,54 @@ fun HomeScreen(
                             }
                         },
                         onShare = {
-                            selectedUser = user
-                            openFileLauncher.launch(Unit)
+                            scope.launch {
+                                val emailKey = withContext(Dispatchers.IO) {
+                                    emailKeyDao.findByEmail(user.email)
+                                }
+
+                                if (emailKey == null) {
+                                    val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
+                                        resolveMyKeys(
+                                            myPublicKeyDao,
+                                            context
+                                        )
+                                    }
+                                    val folderId = withContext(Dispatchers.IO) {
+                                        val existingFolderId = user.folderIDFromMe
+                                        if (existingFolderId != null) {
+                                            existingFolderId
+                                        } else {
+                                            val created = DriveServiceHelper.createUserFolder(context, user.name)
+                                            userDao.updateFolderIdByEmail(user.email, created)
+                                            created
+                                        }
+                                    }
+                                    val registrationUrl = PublicKeyLinkBuilder.build(
+                                        email = accountEmail ?: user.email,
+                                        derivedPublicKey = derivedPublicKey,
+                                        trustLayerPublicKey = trustLayerPublicKey,
+                                        folderId = folderId
+                                    )
+
+                                    Toast.makeText(
+                                        context,
+                                        "相手の公開鍵がまだ登録されていません",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+
+                                    EmailSender.sendPublicKeyRegistrationEmail(
+                                        context = context,
+                                        recipientEmail = user.email,
+                                        registrationUrl = registrationUrl,
+                                        senderEmail = accountEmail
+                                    )
+                                    return@launch
+                                }
+
+                                selectedUser = user
+                                selectedEmailKey = emailKey
+                                openFileLauncher.launch(Unit)
+                            }
                         }
                     )
                 }
