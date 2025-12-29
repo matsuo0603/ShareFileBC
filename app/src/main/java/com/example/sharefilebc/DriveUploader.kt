@@ -68,6 +68,7 @@ class DriveUploader(private val context: Context) {
 
                 val appFolderId = getOrCreateFolder(driveService, "ShareFileBCApp", "root")
                 val recipientFolderId = getOrCreateFolder(driveService, recipient.name, appFolderId)
+
                 val jst = TimeZone.getTimeZone("Asia/Tokyo")
                 val dateFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = jst }
                 val dateTimeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply { timeZone = jst }
@@ -76,6 +77,7 @@ class DriveUploader(private val context: Context) {
                 val currentDateTime = dateTimeFormatter.format(now)
 
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
+
                 val wallet = TapyrusWalletManager.getInstance(context)
                 val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
 
@@ -83,6 +85,7 @@ class DriveUploader(private val context: Context) {
                 if (recipientPublicKeyHex == null) {
                     return@withContext UploadResult.MissingRecipientPublicKey(null)
                 }
+
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
 
@@ -98,23 +101,32 @@ class DriveUploader(private val context: Context) {
                 } else {
                     fileBytes to fileName
                 }
+
                 val fileMetadata = File().apply {
                     name = uploadName
                     parents = listOf(dateFolderId)
                 }
+
                 val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", uploadBytes)
                 val uploadedFile = driveService.files().create(fileMetadata, fileContent)
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // ✅ 受信者名フォルダを共有（ファイル個別や日付フォルダには付与しない）
-                val folderPermission = Permission().apply {
-                    type = "anyone"
-                    role = "reader"
-                }
-                driveService.permissions().create(recipientFolderId, folderPermission)
-                    .setSendNotificationEmail(false)
-                    .execute()
+                // ✅ Drive 権限（共有範囲）
+                // 1) 日付フォルダ(dateFolderId)に reader 権限
+                grantReaderPermission(
+                    driveService = driveService,
+                    targetId = dateFolderId,
+                    recipientEmail = recipient.email
+                )
+
+                // ★重要：2) アップロードしたファイル(uploadedFile.id)にも reader 権限
+                // フォルダが見えても、ファイル本体ダウンロードが 403/404 になることがあるため付与する
+                grantReaderPermission(
+                    driveService = driveService,
+                    targetId = uploadedFile.id,
+                    recipientEmail = recipient.email
+                )
 
                 // 送信ログは従来どおり日付フォルダIDを保存し、削除処理に利用
                 db.sharedFolderDao().insert(
@@ -127,12 +139,37 @@ class DriveUploader(private val context: Context) {
                     )
                 )
 
-                // 共有リンク用には受信者名フォルダIDを返す
-                return@withContext UploadResult.Success(fileName, uploadedFile.id, recipientFolderId)
+                // 共有リンク用には「今回アップロードした日付フォルダ」を返す
+                return@withContext UploadResult.Success(fileName, uploadedFile.id, dateFolderId)
             } catch (e: Exception) {
                 Log.e("DriveUploader", "Upload error", e)
                 return@withContext UploadResult.Failure(e)
             }
+        }
+    }
+
+    /**
+     * 受信者(email)に Drive の閲覧権限(role=reader)を付与する。
+     * - type="user" + emailAddress を使う（anyone共有はしない）
+     * - 通知メールは送らない
+     */
+    private fun grantReaderPermission(
+        driveService: Drive,
+        targetId: String,
+        recipientEmail: String
+    ) {
+        try {
+            val permission = Permission().apply {
+                type = "user"
+                role = "reader"
+                emailAddress = recipientEmail
+            }
+            driveService.permissions().create(targetId, permission)
+                .setSendNotificationEmail(false)
+                .execute()
+            Log.d("DriveUploader", "✅ granted reader permission: target=$targetId to=$recipientEmail")
+        } catch (e: Exception) {
+            Log.e("DriveUploader", "❌ failed to grant permission: target=$targetId to=$recipientEmail", e)
         }
     }
 
