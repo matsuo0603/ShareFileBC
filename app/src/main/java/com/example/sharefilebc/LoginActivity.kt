@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
@@ -30,6 +31,8 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Task
 import com.google.api.services.drive.DriveScopes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class LoginActivity : ComponentActivity() {
 
@@ -64,9 +67,8 @@ class LoginActivity : ComponentActivity() {
         Log.d(TAG, "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
         Log.d(TAG, "onCreate: folderId received: $folderIdFromHomeActivity")
 
-// Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
+        // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         val already = GoogleSignIn.getLastSignedInAccount(this)
-
         val hasDrive = already?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
         if (deepLinkUriFromHomeActivity != null && (already == null || !hasDrive)) {
             launcher.launch(googleSignInClient.signInIntent)
@@ -122,7 +124,26 @@ class LoginActivity : ComponentActivity() {
             val account = task.getResult(Exception::class.java)
             val displayName = account?.displayName ?: "ログインユーザー"
 
-            Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=${GoogleSignIn.hasPermissions(account, Scope(DriveScopes.DRIVE))}")
+            val hasDrive = account?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
+            Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=$hasDrive")
+
+            if (account == null || !hasDrive) {
+                Toast.makeText(this, "Drive権限が不足しています", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            // ===== Swift版寄り：ログイン成功という「イベント」で即同期 =====
+            // Home 画面表示前後で DB が更新されれば、UI は Flow/observe で自動反映される。
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val keyUpserts = PublicKeySyncer.syncOnce(this@LoginActivity)
+                    val folderUpserts = IncomingFilesSyncer.syncOnce(this@LoginActivity)
+                    Log.d(TAG, "✅ Immediate sync finished: keys=$keyUpserts folders=$folderUpserts")
+                } catch (e: Exception) {
+                    Log.e(TAG, "⚠️ Immediate sync failed", e)
+                }
+            }
+
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
                 // deep link に、folderId は extra に戻す（両経路で再現耐性UP）
@@ -132,9 +153,9 @@ class LoginActivity : ComponentActivity() {
             startActivity(intent)
             finish()
 
-
         } catch (e: Exception) {
             Log.e(TAG, "❌ Googleサインイン失敗: ${e.message}", e)
+            Toast.makeText(this, "サインインに失敗しました", Toast.LENGTH_LONG).show()
         }
     }
 }

@@ -130,6 +130,19 @@ fun HomeScreen(
     var walletAddress by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    // ===== Swift版寄り：画面表示という「イベント」で即同期 =====
+    // ログイン直後の即同期だけだと、Drive反映遅延や復帰時取りこぼしが出るので、
+    // Home表示でも 1 回だけ同期しておく。
+    LaunchedEffect(Unit) {
+        try {
+            val keyUpserts = PublicKeySyncer.syncOnce(context)
+            val folderUpserts = IncomingFilesSyncer.syncOnce(context)
+            Log.d("HomeScreen", "✅ Immediate sync on HomeScreen: keys=$keyUpserts folders=$folderUpserts")
+        } catch (e: Exception) {
+            Log.e("HomeScreen", "⚠️ Immediate sync on HomeScreen failed", e)
+        }
+    }
+
 
     val account = remember { GoogleSignIn.getLastSignedInAccount(context) }
     val accountName = account?.displayName
