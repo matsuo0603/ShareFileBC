@@ -12,7 +12,7 @@ class MyApp : Application() {
 
         // ✅ WorkManager によるバックグラウンド定期削除（15分ごと）
         FileDeleteScheduler.schedule(this)
-
+        SyncScheduler.schedule(this)
         // ✅ アプリ起動時に即時削除処理を実行（非同期）
         CoroutineScope(Dispatchers.IO).launch {
             try {

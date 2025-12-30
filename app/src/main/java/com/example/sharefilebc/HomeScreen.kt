@@ -73,6 +73,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
@@ -230,6 +234,18 @@ fun HomeScreen(
         emailKeyDao.getAll().collectLatest { list -> emailKeys = list }
     }
 
+    LaunchedEffect(users, emailKeys) {
+        val emailKeyMap = emailKeys.associateBy { it.email }
+        users.forEach { user ->
+            val emailKey = emailKeyMap[user.email]
+            val hasDerived = !emailKey?.derivedPublicKey.isNullOrBlank()
+            val hasTrustLayer = !emailKey?.trustLayerPublicKey.isNullOrBlank()
+            Log.d(
+                "HomeScreen",
+                "鍵マーク判定: email=${user.email} derivedPublicKey=${hasDerived} trustLayerPublicKey=${hasTrustLayer}"
+            )
+        }
+    }
     // TapyrusWalletManager から現在の受取アドレスを 1 回取得
     LaunchedEffect(Unit) {
         val manager = TapyrusWalletManager.getInstance(context)
@@ -495,6 +511,26 @@ fun HomeScreen(
                                         context
                                     )
                                 }
+                                    val updatedAt = withContext(Dispatchers.IO) {
+                                        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
+                                            timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                                        }
+                                        formatter.format(Date())
+                                    }
+                                    withContext(Dispatchers.IO) {
+                                        DriveServiceHelper.createOrUpdatePublicKeyFile(
+                                            context = context,
+                                            parentFolderId = folderId,
+                                            payload = DriveServiceHelper.PublicKeyPayload(
+                                                ownerEmail = accountEmail ?: email,
+                                                senderMasterPublicKeyHex = trustLayerPublicKey,
+                                                senderDerivedPublicKeyHex = derivedPublicKey,
+                                                trustLayerPublicKey = trustLayerPublicKey,
+                                                updatedAt = updatedAt
+                                            ),
+                                            recipientEmail = email
+                                        )
+                                    }
                                 PublicKeyLinkBuilder.build(
                                     email = accountEmail ?: email,
                                     derivedPublicKey = derivedPublicKey,
