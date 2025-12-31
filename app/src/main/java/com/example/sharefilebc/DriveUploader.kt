@@ -82,6 +82,7 @@ class DriveUploader(private val context: Context) {
                 val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
 
                 val recipientPublicKeyHex = recipientKey.derivedPublicKey.takeIf { it.isNotBlank() }
+
                 if (recipientPublicKeyHex == null) {
                     return@withContext UploadResult.MissingRecipientPublicKey(null)
                 }
@@ -90,6 +91,13 @@ class DriveUploader(private val context: Context) {
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
 
                 val (uploadBytes, uploadName) = if (recipientPublicKeyHex != null) {
+
+                    // ✅ 追加：暗号化に使う「受信者公開鍵」を確定でログ出し（先頭16文字）
+                    Log.d(
+                        "DriveUploader",
+                        "🔐 encrypt recipientPublicKeyHex(head)=${recipientPublicKeyHex.take(16)}"
+                    )
+
                     val secureBytes = SecurePackage.create(
                         data = fileBytes,
                         fileName = fileName,

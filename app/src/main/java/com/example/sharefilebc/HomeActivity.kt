@@ -19,10 +19,11 @@ import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.network.PublicKeyApiClient
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.common.api.Scope
 import com.google.api.services.drive.DriveScopes
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.example.sharefilebc.data.AppDatabase
@@ -125,6 +126,23 @@ class HomeActivity : ComponentActivity() {
                     "公開鍵を登録しました",
                     Toast.LENGTH_LONG
                 ).show()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        val db = AppDatabase.getDatabase(applicationContext)
+
+                        // Flow<List<EmailKeyEntity>> → first() で1回だけ取得
+                        val keys = db.emailKeyDao().getAll().first()
+
+                        keys.forEach { key ->
+                            Log.d("DEBUG", "Email: ${key.email}")
+                            Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
+                            Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("DEBUG", "EmailKeyEntity dump failed", e)
+                    }
+                }
+
             }
         }
         // ✅ アカウント + Drive スコープを両方チェック
