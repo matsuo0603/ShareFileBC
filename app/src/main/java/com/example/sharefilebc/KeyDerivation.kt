@@ -1,8 +1,7 @@
-package com.example.sharefilebc.managers
+package com.example.sharefilebc
 
 import android.content.Context
 import android.util.Log
-import com.example.sharefilebc.KeyManager
 import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import com.example.sharefilebc.crypto.HexUtils.toHexString
 import com.example.sharefilebc.crypto.KeyDerivation
@@ -21,18 +20,18 @@ import java.security.MessageDigest
  *
  * 将来的には残高やトークン、返金コンテキストなどもここに集約していく想定。
  */
-class TapyrusWalletManager private constructor(context: Context) {
+class KeyDerivation private constructor(context: Context) {
 
     companion object {
         private const val TAG = "TapyrusWalletManager"
         private const val DEFAULT_PATH = "m/44'/0'/0'/0/0"
 
         @Volatile
-        private var instance: TapyrusWalletManager? = null
+        private var instance: com.example.sharefilebc.KeyDerivation? = null
 
-        fun getInstance(context: Context): TapyrusWalletManager =
+        fun getInstance(context: Context): com.example.sharefilebc.KeyDerivation =
             instance ?: synchronized(this) {
-                instance ?: TapyrusWalletManager(context.applicationContext).also { instance = it }
+                instance ?: KeyDerivation(context.applicationContext).also { instance = it }
             }
     }
 

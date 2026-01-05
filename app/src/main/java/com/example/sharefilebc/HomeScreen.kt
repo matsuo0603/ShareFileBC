@@ -84,7 +84,6 @@ import com.example.sharefilebc.data.EmailKeyEntity
 import com.example.sharefilebc.data.MyPublicKeyDao
 import com.example.sharefilebc.data.MyPublicKeyEntity
 import com.example.sharefilebc.data.UserEntity
-import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -184,7 +183,7 @@ fun HomeScreen(
                         when (result) {
                             is UploadResult.Success -> {
                                 val (fileName, fileId, folderId) = result
-                                val wallet = TapyrusWalletManager.getInstance(context)
+                                val wallet = KeyDerivation.getInstance(context)
                                 val senderPublicKey = runCatching {
                                     wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
                                 }.getOrNull()
@@ -261,7 +260,7 @@ fun HomeScreen(
     }
     // TapyrusWalletManager から現在の受取アドレスを 1 回取得
     LaunchedEffect(Unit) {
-        val manager = TapyrusWalletManager.getInstance(context)
+        val manager = KeyDerivation.getInstance(context)
         val addr = try {
             manager.getCurrentAddress()
         } catch (e: Exception) {
@@ -870,7 +869,7 @@ private suspend fun resolveMyKeys(
     myPublicKeyDao: MyPublicKeyDao,
     context: android.content.Context
 ): Pair<String, String> {
-    val wallet = TapyrusWalletManager.getInstance(context)
+    val wallet = KeyDerivation.getInstance(context)
     val existing = myPublicKeyDao.getPrimary()
     val trustLayer = existing?.trustLayerPublicKey
         ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")

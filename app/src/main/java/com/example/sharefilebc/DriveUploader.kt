@@ -21,7 +21,6 @@ import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import com.example.sharefilebc.data.UserEntity
-import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.crypto.SecurePackage
 import com.example.sharefilebc.data.MyPublicKeyEntity
 
@@ -78,7 +77,7 @@ class DriveUploader(private val context: Context) {
 
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
 
-                val wallet = TapyrusWalletManager.getInstance(context)
+                val wallet = KeyDerivation.getInstance(context)
                 val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
 
                 val recipientPublicKeyHex = recipientKey.derivedPublicKey.takeIf { it.isNotBlank() }
@@ -183,7 +182,7 @@ class DriveUploader(private val context: Context) {
 
     private suspend fun resolveMyKeys(
         db: AppDatabase,
-        wallet: TapyrusWalletManager
+        wallet: KeyDerivation
     ): Pair<String, String> {
         val myKeyDao = db.myPublicKeyDao()
         val existing = myKeyDao.getPrimary()

@@ -13,7 +13,6 @@ import com.example.sharefilebc.crypto.SecurePackage
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveFileInfo
 import com.example.sharefilebc.data.FolderStructure
-import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -316,7 +315,7 @@ class DriveDownloader(private val context: Context) {
             val packageBytes = downloadedFile.readBytes()
             Log.d("DriveDownloader", "📊 パッケージサイズ: ${packageBytes.size} bytes")
 
-            val wallet = TapyrusWalletManager.getInstance(context)
+            val wallet = KeyDerivation.getInstance(context)
 
             // 受信用秘密鍵（/1）
             val recipientPrivateKeyHex = wallet.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)

@@ -15,7 +15,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
-import com.example.sharefilebc.managers.TapyrusWalletManager
 import com.example.sharefilebc.network.PublicKeyApiClient
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -46,7 +45,7 @@ class HomeActivity : ComponentActivity() {
 
         // 🔐 Tapyrus ウォレットの受取アドレス取得（鍵生成〜派生は TapyrusWalletManager に集約）
         try {
-            val walletManager = TapyrusWalletManager.getInstance(applicationContext)
+            val walletManager = KeyDerivation.getInstance(applicationContext)
             val currentAddress = walletManager.getCurrentAddress()
             Log.d(
                 TAG,
@@ -57,7 +56,7 @@ class HomeActivity : ComponentActivity() {
         }
 
         // 🔍 テスト用ログ：公開鍵 / 秘密鍵の確認（秘密鍵はマスクする）
-        val walletManager = TapyrusWalletManager.getInstance(applicationContext)
+        val walletManager = KeyDerivation.getInstance(applicationContext)
         val pubHex = walletManager.getCurrentPublicKeyHex()
         Log.d(TAG, "Tapyrus public key HEX = $pubHex")
 
