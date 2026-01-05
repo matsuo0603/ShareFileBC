@@ -9,15 +9,12 @@ import com.chaintope.tapyrus.wallet.TransferParams
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.lang.reflect.Constructor
 
 /**
- * Tapyrus Wallet 機能
+ * Tapyrus Wallet 機能（あなたが開いている HdWallet/Config の実定義に合わせた版）
  *
- * 重要:
- * - Config のコンストラクタ定義が AAR の版/混在で変わるため、
- *   Config(...) の直呼びをやめて reflection で生成する。
- * - これで「colorId 必須/不要」のどちらでもコンパイルが通る。
+ * - Config は 9引数版（networkId/genesisHash/esploraUrl/masterKey/dbFilePath）
+ * - balance / getNewAddress は colorId: String? を渡す必要がある
  */
 class WalletManager private constructor(
     private val appContext: Context
@@ -38,24 +35,33 @@ class WalletManager private constructor(
     @Volatile private var wallet: HdWallet? = null
     @Volatile private var config: Config? = null
 
+    /**
+     * 今は「通常のTPC（無色）」として扱うので null
+     * もし色付きで運用するなら、ここに colorId 文字列を入れる。
+     */
+    private val colorId: String? = null
+
     private fun getOrCreateWallet(): HdWallet {
         wallet?.let { return it }
 
         val masterKey = KeyManager.getInstance(appContext).getOrCreateMasterXprv()
         val dbFilePath = File(appContext.filesDir, "tapyrus_wallet.db").absolutePath
 
-        // Swift版と合わせた想定値
         val networkMode = Network.PROD
         val networkId = 1939510133u
         val genesisHash =
             "038b114875c2f78f5a2fd7d8549a905f38ea5faee6e29a3d79e547151d6bdd8a"
         val esploraUrl = "https://esplora.tapyrus.dev"
 
-        config = createConfigCompat(
+        // Config の実定義（あなたが貼った 9引数版）に合わせる
+        config = Config(
             networkMode = networkMode,
             networkId = networkId,
             genesisHash = genesisHash,
             esploraUrl = esploraUrl,
+            esploraUser = null,
+            esploraPassword = null,
+            masterKeyPath = null,
             masterKey = masterKey,
             dbFilePath = dbFilePath
         )
@@ -65,163 +71,46 @@ class WalletManager private constructor(
         return wallet!!
     }
 
-    /**
-     * 実際にクラスパスにいる Config のコンストラクタに合わせて生成する。
-     *
-     * 期待している9引数版（あなたのデコンパイル結果）:
-     *  Config(Network, UInt, String, String, String?, String?, String?, String?, String?)
-     *
-     * もし混ざっている可能性がある colorId 必須版（別版）も保険で試す:
-     *  Config(Network, UInt, String, String, Int, String?, String?, String?, String?, String?)
-     *  Config(Network, String, Int, String, String) など
-     */
-    private fun createConfigCompat(
-        networkMode: Network,
-        networkId: UInt,
-        genesisHash: String,
-        esploraUrl: String,
-        masterKey: String,
-        dbFilePath: String
-    ): Config {
-        val ctors: Array<Constructor<*>> = Config::class.java.constructors
-
-        // まず “9引数（UInt）” を最優先で狙う（あなたが貼った定義）
-        runCatching {
-            ctors.forEach { c ->
-                val p = c.parameterTypes
-                if (p.size == 9 &&
-                    p[0] == Network::class.java &&
-                    p[1].name == "kotlin.UInt" &&
-                    p[2] == String::class.java &&
-                    p[3] == String::class.java
-                ) {
-                    return c.newInstance(
-                        networkMode,
-                        networkId,
-                        genesisHash,
-                        esploraUrl,
-                        null,          // esploraUser
-                        null,          // esploraPassword
-                        null,          // masterKeyPath
-                        masterKey,     // masterKey
-                        dbFilePath     // dbFilePath
-                    ) as Config
-                }
-            }
-        }
-
-        // UInt が Int に落ちてる版（9引数）も試す
-        runCatching {
-            ctors.forEach { c ->
-                val p = c.parameterTypes
-                if (p.size == 9 &&
-                    p[0] == Network::class.java &&
-                    (p[1] == Int::class.javaPrimitiveType || p[1] == Int::class.java) &&
-                    p[2] == String::class.java &&
-                    p[3] == String::class.java
-                ) {
-                    return c.newInstance(
-                        networkMode,
-                        networkId.toInt(),
-                        genesisHash,
-                        esploraUrl,
-                        null,
-                        null,
-                        null,
-                        masterKey,
-                        dbFilePath
-                    ) as Config
-                }
-            }
-        }
-
-        // colorId が追加された版（想定外だが保険）: 10引数で Int colorId が途中にあるパターン
-        runCatching {
-            ctors.forEach { c ->
-                val p = c.parameterTypes
-                // 例: (Network, UInt/Int, String, String, Int, ... String? x5)
-                if (p.size == 10 &&
-                    p[0] == Network::class.java &&
-                    (p[1].name == "kotlin.UInt" || p[1] == Int::class.javaPrimitiveType || p[1] == Int::class.java) &&
-                    p[2] == String::class.java &&
-                    p[3] == String::class.java &&
-                    (p[4] == Int::class.javaPrimitiveType || p[4] == Int::class.java)
-                ) {
-                    val nid: Any = if (p[1].name == "kotlin.UInt") networkId else networkId.toInt()
-                    val colorId = 1
-                    return c.newInstance(
-                        networkMode,
-                        nid,
-                        genesisHash,
-                        esploraUrl,
-                        colorId,
-                        null,
-                        null,
-                        null,
-                        masterKey,
-                        dbFilePath
-                    ) as Config
-                }
-            }
-        }
-
-        // もっと短い版があるなら試す（6引数など）
-        runCatching {
-            ctors.forEach { c ->
-                val p = c.parameterTypes
-                if (p.size == 6 &&
-                    p[0] == Network::class.java &&
-                    (p[1].name == "kotlin.UInt" || p[1] == Int::class.javaPrimitiveType || p[1] == Int::class.java) &&
-                    p[2] == String::class.java &&
-                    p[3] == String::class.java &&
-                    p[4] == String::class.java &&
-                    p[5] == String::class.java
-                ) {
-                    val nid: Any = if (p[1].name == "kotlin.UInt") networkId else networkId.toInt()
-                    return c.newInstance(
-                        networkMode,
-                        nid,
-                        genesisHash,
-                        esploraUrl,
-                        masterKey,
-                        dbFilePath
-                    ) as Config
-                }
-            }
-        }
-
-        val sigs = ctors.joinToString("\n") { it.toString() }
-        throw IllegalStateException("No compatible Config constructor found.\n$sigs")
-    }
-
     suspend fun sync() = withContext(Dispatchers.IO) {
         getOrCreateWallet().sync()
         Log.d(TAG, "sync completed")
     }
 
+    /**
+     * 残高（satoshi）
+     * ※この SDK は colorId: String? を要求する
+     */
     suspend fun getBalance(): ULong = withContext(Dispatchers.IO) {
-        val balance = getOrCreateWallet().balance()
-        Log.d(TAG, "balance=$balance")
-        balance
+        val bal = getOrCreateWallet().balance(colorId)
+        Log.d(TAG, "balance=$bal colorId=$colorId")
+        bal
     }
 
+    /**
+     * 新しい受信用アドレス
+     * ※この SDK は colorId: String? を要求する
+     */
     suspend fun getNewAddress(): String = withContext(Dispatchers.IO) {
-        val address = getOrCreateWallet().getNewAddress().address
-        Log.d(TAG, "newAddress=$address")
+        val res = getOrCreateWallet().getNewAddress(colorId)
+        val address = res.address
+        Log.d(TAG, "newAddress=$address colorId=$colorId")
         address
     }
 
+    /**
+     * 送金
+     * transfer の署名はあなたが貼った定義と一致：
+     * transfer(params: List<TransferParams>, utxos: List<TxOut>): String
+     */
     suspend fun transfer(toAddress: String, amountSat: ULong): String = withContext(Dispatchers.IO) {
-        val transferParams = TransferParams(
+        val p = TransferParams(
             amount = amountSat,
             toAddress = toAddress
         )
-
         val txid = getOrCreateWallet().transfer(
-            params = listOf(transferParams),
+            params = listOf(p),
             utxos = listOf()
         )
-
         Log.d(TAG, "transfer txid=$txid")
         txid
     }
@@ -230,11 +119,11 @@ class WalletManager private constructor(
         try {
             wallet?.close()
             config?.close()
-            wallet = null
-            config = null
-            Log.d(TAG, "wallet cleaned up")
         } catch (e: Exception) {
             Log.e(TAG, "cleanup error", e)
+        } finally {
+            wallet = null
+            config = null
         }
     }
 }
