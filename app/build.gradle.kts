@@ -67,10 +67,16 @@ dependencies {
     // ✅ ローカル方式（Swift版と同じ思想）
     implementation(files("libs/lib-release.aar"))
 
+    // ===== Kotlin / Android =====
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+
+    // ===== Coroutine =====
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
     implementation("com.jakewharton.threetenabp:threetenabp:1.4.5")
 
-    // ❌ これは削除（AARと二重になる）
-    // implementation("com.chaintope.tapyrus.wallet:tapyrus-wallet-android:0.1.2")
 
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
