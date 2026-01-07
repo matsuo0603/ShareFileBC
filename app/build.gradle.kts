@@ -64,6 +64,8 @@ android {
 }
 
 dependencies {
+    // implementation(libs.jna)  // ★削除：JNA排除
+
     // ✅ ローカル方式（Swift版と同じ思想）
     implementation(files("libs/lib-release.aar"))
 

@@ -124,24 +124,21 @@ fun HomeScreen(
     var addEmail by remember { mutableStateOf("") }
     var registrationSnackbarMessage by remember { mutableStateOf<String?>(null) }
 
-
     // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
     var walletAddress by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
-    // ===== Swift版寄り：画面表示という「イベント」で即同期 =====
-    // ログイン直後の即同期だけだと、Drive反映遅延や復帰時取りこぼしが出るので、
-    // Home表示でも 1 回だけ同期しておく。
+
+    // ===== 切り分け用：Home表示直後の即同期を一旦無効化 =====
     LaunchedEffect(Unit) {
         try {
-            val keyUpserts = PublicKeySyncer.syncOnce(context)
-            val folderUpserts = IncomingFilesSyncer.syncOnce(context)
-            Log.d("HomeScreen", "✅ Immediate sync on HomeScreen: keys=$keyUpserts folders=$folderUpserts")
+            // val keyUpserts = PublicKeySyncer.syncOnce(context)
+            // val folderUpserts = IncomingFilesSyncer.syncOnce(context)
+            Log.d("HomeScreen", "⏭ Immediate sync on HomeScreen is DISABLED for debugging")
         } catch (e: Exception) {
             Log.e("HomeScreen", "⚠️ Immediate sync on HomeScreen failed", e)
         }
     }
-
 
     val account = remember { GoogleSignIn.getLastSignedInAccount(context) }
     val accountName = account?.displayName
@@ -160,9 +157,13 @@ fun HomeScreen(
             (context as? Activity)?.finish()
         }
     }
+
     var isBalanceVisible by remember { mutableStateOf(false) }
+    var balanceSat by remember { mutableStateOf<ULong?>(null) }
+
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
     var selectedEmailKey by remember { mutableStateOf<EmailKeyEntity?>(null) }
+
     val openFileLauncher = rememberLauncherForActivityResult(
         contract = FilePickerContract(),
         onResult = { uri: Uri? ->
@@ -258,14 +259,11 @@ fun HomeScreen(
             )
         }
     }
+
     // TapyrusWalletManager から現在の受取アドレスを 1 回取得
     LaunchedEffect(Unit) {
-        val manager = KeyDerivation.getInstance(context)
-        val addr = try {
-            manager.getCurrentAddress()
-        } catch (e: Exception) {
-            null
-        }
+        val manager = WalletManager.getInstance(context)
+        val addr = runCatching { manager.getNewAddress() }.getOrNull()
         walletAddress = addr
     }
 
@@ -275,6 +273,7 @@ fun HomeScreen(
             registrationSnackbarMessage = null
         }
     }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.surface,
@@ -307,7 +306,29 @@ fun HomeScreen(
                 BalanceVisibilityButton(
                     modifier = Modifier,
                     isVisible = isBalanceVisible,
-                    onClick = { isBalanceVisible = !isBalanceVisible }
+                    onClick = {
+                        scope.launch {
+                            val manager = WalletManager.getInstance(context)
+                            Log.d("BalanceDebug", "WalletManager class = ${manager::class.qualifiedName}")
+
+                            runCatching {
+                                Log.d("BalanceDebug", "sync start")
+                                manager.sync()
+                                Log.d("BalanceDebug", "sync end")
+
+                                Log.d("BalanceDebug", "getBalance start")
+                                val bal = manager.getBalance()
+                                Log.d("BalanceDebug", "getBalance end: $bal")
+                                bal
+                            }.onSuccess { balance ->
+                                balanceSat = balance
+                                isBalanceVisible = !isBalanceVisible
+                            }.onFailure { e ->
+                                Log.e("HomeScreen", "残高取得に失敗しました", e)
+                                Toast.makeText(context, "残高取得に失敗しました", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
                 )
 
                 // クリック領域も丸くする
@@ -326,11 +347,12 @@ fun HomeScreen(
 
             if (isBalanceVisible) {
                 Spacer(Modifier.height(16.dp))
+                val balanceDisplay = balanceSat ?: 0uL  // ★ UIntではなくULongに合わせる
                 BalanceSummaryCard(
                     balanceTitle = "Balance",
-                    primaryAmount = "0",
+                    primaryAmount = balanceDisplay.toString(),
                     primaryUnit = "Token",
-                    secondaryAmount = "0.00000000",
+                    secondaryAmount = formatTpc(balanceDisplay),
                     secondaryUnit = "TPC"
                 )
             }
@@ -516,13 +538,13 @@ fun HomeScreen(
                                                 publicKeyHex = null
                                             )
                                         )
-                                }
-                                val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
-                                    resolveMyKeys(
-                                        myPublicKeyDao,
-                                        context
-                                    )
-                                }
+                                    }
+                                    val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
+                                        resolveMyKeys(
+                                            myPublicKeyDao,
+                                            context
+                                        )
+                                    }
                                     val updatedAt = withContext(Dispatchers.IO) {
                                         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
                                             timeZone = TimeZone.getTimeZone("Asia/Tokyo")
@@ -543,12 +565,12 @@ fun HomeScreen(
                                             recipientEmail = email
                                         )
                                     }
-                                PublicKeyLinkBuilder.build(
-                                    email = accountEmail ?: email,
-                                    derivedPublicKey = derivedPublicKey,
-                                    trustLayerPublicKey = trustLayerPublicKey,
-                                    folderId = folderId
-                                )
+                                    PublicKeyLinkBuilder.build(
+                                        email = accountEmail ?: email,
+                                        derivedPublicKey = derivedPublicKey,
+                                        trustLayerPublicKey = trustLayerPublicKey,
+                                        folderId = folderId
+                                    )
                                 }
                                 isRegistering = false
 
@@ -576,9 +598,6 @@ fun HomeScreen(
                 ) { Text("登録") }
             },
             shape = RoundedCornerShape(24.dp),
-
-            // Material3 AlertDialog は colors パラメータを持たないので、
-            // 個別プロパティで色を指定する
             containerColor = PureWhite,
             iconContentColor = MaterialTheme.colorScheme.onSurface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
@@ -676,6 +695,13 @@ private fun BalanceSummaryCard(
             )
         }
     }
+}
+
+private fun formatTpc(balance: ULong): String {
+    val unit = 100_000_000u
+    val whole = balance / unit
+    val fraction = (balance % unit).toString().padStart(8, '0')
+    return "$whole.$fraction"
 }
 
 /**
@@ -822,8 +848,7 @@ private fun SwipeRevealUserRow(
                             scope.launch { offsetX.animateTo(target, tween(180)) }
                         },
                         onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(180)) } }
-                    ) { change: PointerInputChange, dragAmount: Float ->
-                        // change.consume() は不要なので削除
+                    ) { _: PointerInputChange, dragAmount: Float ->
                         val newX = (offsetX.value + dragAmount).coerceIn(-actionWidthPx, 0f)
                         scope.launch { offsetX.snapTo(newX) }
                     }

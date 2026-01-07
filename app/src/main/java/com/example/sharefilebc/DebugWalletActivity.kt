@@ -1,7 +1,10 @@
 package com.example.sharefilebc
 
 import android.os.Bundle
-import android.widget.*
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -10,8 +13,6 @@ class DebugWalletActivity : AppCompatActivity() {
 
     private lateinit var wallet: WalletManager
     private lateinit var logView: TextView
-    private lateinit var addressInput: EditText
-    private lateinit var amountInput: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -29,23 +30,11 @@ class DebugWalletActivity : AppCompatActivity() {
                 setOnClickListener { action() }
             }
 
-        addressInput = EditText(this).apply {
-            hint = "送金先アドレス"
-        }
-
-        amountInput = EditText(this).apply {
-            hint = "送金額（satoshi）"
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-        }
-
         logView = TextView(this)
 
         layout.addView(button("Sync") { sync() })
         layout.addView(button("Balance") { balance() })
         layout.addView(button("New Address") { newAddress() })
-        layout.addView(addressInput)
-        layout.addView(amountInput)
-        layout.addView(button("Transfer") { transfer() })
         layout.addView(logView)
 
         val scroll = ScrollView(this)
@@ -63,23 +52,11 @@ class DebugWalletActivity : AppCompatActivity() {
         append("address = ${wallet.getNewAddress()}")
     }
 
-    private fun transfer() {
-        val addr = addressInput.text.toString().trim()
-        if (addr.isEmpty()) return
-
-        val amount = amountInput.text.toString().trim().toULongOrNull() ?: return
-
-        launchIO("transfer") {
-            val txid = wallet.transfer(addr, amount)
-            append("txid = $txid")
-        }
-    }
-
     private fun launchIO(label: String, block: suspend () -> Unit) {
         append("▶ $label")
         lifecycleScope.launch {
             runCatching { block() }
-                .onFailure { append("❌ ${it.message}") }
+                .onFailure { append("❌ ${it::class.simpleName}: ${it.message}") }
         }
     }
 
