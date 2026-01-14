@@ -18,6 +18,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // ✅ エミュレータ(x86_64)でも動かしたい場合は x86_64 を含める
+        // ※ 実機(arm64)だけで試すなら arm64-v8a のみでもOK
+        ndk {
+            abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -34,25 +40,28 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+
     kotlinOptions {
         jvmTarget = "11"
     }
+
     buildFeatures {
         compose = true
     }
 
-    // ★ここで重複するMETA-INF系ファイルを全部除外する
     packaging {
         resources {
-            // さっきの DEPENDENCIES 問題
             excludes += "META-INF/DEPENDENCIES"
             excludes += "META-INF/LICENSE"
             excludes += "META-INF/LICENSE.txt"
             excludes += "META-INF/NOTICE"
             excludes += "META-INF/NOTICE.txt"
-
-            // 今回の bcprov / jspecify の衝突
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+
+        // ✅ .so をAPKに正しく入れる/展開するため（JNA/NDK系で事故りやすい）
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
@@ -64,10 +73,8 @@ android {
 }
 
 dependencies {
-    // implementation(libs.jna)  // ★削除：JNA排除
-
-    // ✅ ローカル方式（Swift版と同じ思想）
-    implementation(files("libs/lib-release.aar"))
+    implementation("com.chaintope.tapyrus.wallet:tapyrus-wallet-android:0.1.3")
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
 
     // ===== Kotlin / Android =====
     implementation("androidx.core:core-ktx:1.13.1")
@@ -76,23 +83,20 @@ dependencies {
 
     // ===== Coroutine =====
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-
     implementation("com.jakewharton.threetenabp:threetenabp:1.4.5")
-
-
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
-    //Room
+    // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Firebase - BOMを統一
+    // Firebase
     implementation(platform("com.google.firebase:firebase-bom:33.12.0"))
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.firebase:firebase-auth-ktx")
 
-    // Compose関連
+    // Compose
     implementation(platform("androidx.compose:compose-bom:2023.10.01"))
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
@@ -101,13 +105,11 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
-    // HomeScreen.kt などで使っているCompose系
     implementation("androidx.activity:activity-compose:1.8.0")
     implementation("androidx.compose.foundation:foundation-layout")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 
-    // Google サインイン
+    // Google Sign-In
     implementation("com.google.android.gms:play-services-auth:20.7.0")
 
     // Google API Client
@@ -121,28 +123,25 @@ dependencies {
     // Gmail API
     implementation("com.google.apis:google-api-services-gmail:v1-rev20220404-2.0.0")
 
-    // JavaMail API - Gmail送信用
+    // JavaMail API
     implementation("com.sun.mail:javax.mail:1.6.2")
 
-    // HTTP クライアント
+    // HTTP
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // AndroidX
-    implementation("androidx.core:core-ktx:1.10.1")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.10.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.6.2")
 
-    // ファイル操作
+    // File
     implementation("commons-io:commons-io:2.13.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
     // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
 
-    // テスト
+    // Test
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

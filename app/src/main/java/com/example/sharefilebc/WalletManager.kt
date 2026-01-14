@@ -2,105 +2,148 @@ package com.example.sharefilebc
 
 import android.content.Context
 import android.util.Log
+import com.chaintope.tapyrus.wallet.Config
+import com.chaintope.tapyrus.wallet.HdWallet
+import com.chaintope.tapyrus.wallet.Network
+import com.chaintope.tapyrus.wallet.TransferParams
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import java.security.Security
 
 /**
- * Wallet UI から呼ばれる “窓口” クラス。
+ * Tapyrus Wallet の Android 側エントリポイント。
  *
- * 重要:
- * - 以前の WalletManager が `com.chaintope.tapyrus.wallet` (uniffi) を直接使う構成だと、
- *   実機で JNA の native ライブラリが見つからずクラッシュ/失敗する
- *   （libjnidispatch.so が無い、など）。
+ * - Swift版 TapyrusWalletManager.swift に相当
+ * - AccountScreen のトークン設定（しきい値/送金量）は「このWalletを呼ぶUI側の話」で、
+ *   ネットワーク接続設定（genesisHash/esploraUrl/networkId）とは別概念
  *
- * - そこで「鍵・アドレス生成」は KeyDerivation（旧 TapyrusWalletManager 相当）に統一し、
- *   残高は HTTP など “JNA不要の方法” で取得する方針にする。
+ * このプロジェクトで使っている Tapyrus Wallet AAR のAPI仕様に合わせている：
+ * - getNewAddress(colorId: String?) で colorId は nullable（TPC= null）
+ * - balance(colorId: String?) の返り値は ULong
+ * - TransferParams.amount は ULong
  */
-class WalletManager private constructor(private val appContext: Context) {
-
-    private val keyDerivation: KeyDerivation = KeyDerivation.getInstance(appContext)
+class WalletManager private constructor(
+    private val appContext: Context
+) {
 
     companion object {
-        @Volatile private var INSTANCE: WalletManager? = null
+        private const val TAG = "WalletManager"
+
+        @Volatile
+        private var INSTANCE: WalletManager? = null
 
         fun getInstance(context: Context): WalletManager {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: WalletManager(context.applicationContext).also { INSTANCE = it }
             }
         }
-
-        private const val TAG = "WalletManager"
     }
 
     /**
-     * Swift 版でいう「同期（sync）」の入口。
-     * ここでは “JNAなし” 方針のため no-op にしておく。
+     * Swift版から移植した Tapyrus 接続設定
      */
+    private object WalletRuntimeConfig {
+        val networkMode: Network = Network.PROD
+        val networkId: UInt = 1195501765u
+        val genesisHash =
+            "529fc8b00a65d3f9679052d5f5c63bee961e955ce2e78f47d715c2d357fbdbe5"
+        val esploraUrl = "https://index-lab.msc.trustlayer.jp"
+
+        /**
+         * TPC（無色コイン）は colorId を渡さず null にする（Tapyrus Wallet SDK の仕様）
+         *
+         * - ""（空文字）や "00..00"（64桁ゼロ）は InvalidColorId になる
+         */
+        val TPC_COLOR_ID: String? = null
+    }
+
+    private val initMutex = Mutex()
+    private var wallet: HdWallet? = null
+
+    private suspend fun getOrCreateWallet(): HdWallet = initMutex.withLock {
+        wallet?.let { return it }
+
+        ensureBouncyCastle()
+
+        val masterXprv = KeyManager.getInstance(appContext).getOrCreateMasterXprv()
+        val dbPath = appContext.getDatabasePath("tapyrus_wallet.db").absolutePath
+
+        val config = Config(
+            networkMode = WalletRuntimeConfig.networkMode,
+            networkId = WalletRuntimeConfig.networkId,
+            genesisHash = WalletRuntimeConfig.genesisHash,
+            esploraUrl = WalletRuntimeConfig.esploraUrl,
+            masterKey = masterXprv,
+            dbFilePath = dbPath
+        )
+
+        val w = HdWallet(config)
+        wallet = w
+        Log.d(TAG, "HdWallet initialized. db=$dbPath")
+        w
+    }
+
+    /** ブロックチェーン同期 */
     suspend fun sync() = withContext(Dispatchers.IO) {
-        Log.d(TAG, "sync(): no-op (JNA-free, balance via HTTP)")
+        val w = getOrCreateWallet()
+        w.sync()
+        Log.d(TAG, "sync done")
     }
 
-    /**
-     * UI で表示する “現在の受取アドレス” を返す。
-     * 旧 TapyrusWalletManager の currentAddress(m/44'/0'/0'/0/0) 相当。
-     */
-    suspend fun getNewAddress(): String = withContext(Dispatchers.Default) {
-        val addr = keyDerivation.getCurrentAddress()
-        Log.d(TAG, "getNewAddress() address=$addr")
-        addr
+    /** 新規 TPC 受取アドレス */
+    suspend fun getNewAddress(): String = withContext(Dispatchers.IO) {
+        val w = getOrCreateWallet()
+
+        // ✅ TPC は colorId = null
+        val result = w.getNewAddress(WalletRuntimeConfig.TPC_COLOR_ID)
+
+        Log.d(TAG, "new address=${result.address}")
+        result.address
     }
 
-    /**
-     * 残高（satoshi）を返す。
-     *
-     * 注意:
-     * - ここは “JNAを使わない” ので、Tapyrus の explorer API / 自前サーバ等の HTTP で取得する想定。
-     * - まだ取得先が未確定なら、まずは 0 を返して UI を動かす（落とさない）方が安全。
-     */
+    /** 残高（TPC） */
     suspend fun getBalance(): ULong = withContext(Dispatchers.IO) {
-        val address = keyDerivation.getCurrentAddress()
+        val w = getOrCreateWallet()
+
+        // ✅ TPC は colorId = null
+        val balance: ULong = w.balance(WalletRuntimeConfig.TPC_COLOR_ID)
+
+        Log.d(TAG, "balance=$balance")
+        balance
+    }
+
+    /**
+     * 送金（TPC）
+     *
+     * - UI側は ULong で扱ってOK（AccountScreenの送金量など）
+     * - Tapyrus Wallet AAR 側も amount=ULong の定義になっているので変換しない
+     */
+    suspend fun transfer(
+        toAddress: String,
+        amountSat: ULong
+    ): String = withContext(Dispatchers.IO) {
+
+        val w = getOrCreateWallet()
+
+        val params = listOf(
+            TransferParams(
+                amount = amountSat,      // ← ULong
+                toAddress = toAddress
+                // ※ このAARでは TransferParams に colorId が無い（エラーで確定）
+            )
+        )
+
+        val txid = w.transfer(params, emptyList())
+        Log.d(TAG, "transfer txid=$txid")
+        txid
+    }
+
+    private fun ensureBouncyCastle() {
         try {
-            fetchBalanceSatoshi(address)
-        } catch (e: Exception) {
-            Log.e(TAG, "getBalance() failed: ${e.message}", e)
-            0UL
+            if (Security.getProvider("BC") != null) return
+        } catch (_: Exception) {
         }
-    }
-
-    /**
-     * 残高取得（HTTP）本体。
-     *
-     * ここは先輩（Swift版）で使っている “残高取得先” に合わせる必要がある。
-     * まだURLやレスポンス形式が不明なら、いったん 0 を返す実装にして UI を先に完成させるのが良い。
-     */
-    private fun fetchBalanceSatoshi(address: String): ULong {
-        // TODO: Swift 版が参照している explorer/endpoint に合わせて実装する。
-        // 例（ダミー）:
-        // val url = URL("https://example.com/balance?address=$address")
-        // val conn = (url.openConnection() as HttpURLConnection).apply {
-        //     requestMethod = "GET"
-        //     connectTimeout = 10_000
-        //     readTimeout = 10_000
-        // }
-        // conn.inputStream.use { ... JSONをparseして satoshi を返す ... }
-
-        Log.w(TAG, "fetchBalanceSatoshi(): endpoint is not configured yet. address=$address")
-        return 0UL
-    }
-
-    /**
-     * 送金（transfer）
-     *
-     * DebugWalletActivity が呼ぶなら、関数だけでも用意してコンパイルを通す。
-     * 実装は Tapyrus の送金API（Swift版の flow）に合わせて後で詰める。
-     */
-    suspend fun transfer(toAddress: String, amountSat: ULong): String = withContext(Dispatchers.IO) {
-        // TODO: 先輩Swift版の送金処理と同等の仕様を決めて実装する
-        Log.w(TAG, "transfer(): not implemented yet. to=$toAddress amountSat=$amountSat")
-        "NOT_IMPLEMENTED"
     }
 }

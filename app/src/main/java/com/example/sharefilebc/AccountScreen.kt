@@ -1,5 +1,6 @@
 package com.example.sharefilebc
 
+import android.content.Context
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,11 +34,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -49,6 +52,7 @@ import com.example.sharefilebc.ui.theme.PureWhite
 import com.example.sharefilebc.ui.theme.rememberAvatarColors
 import kotlin.math.abs
 import com.example.sharefilebc.ui.theme.IosGroupedBG
+import kotlinx.coroutines.launch
 
 @Composable
 fun AccountScreen(
@@ -61,10 +65,21 @@ fun AccountScreen(
     onSendFeeChange: (Int) -> Unit,
     onSignOutConfirmed: () -> Unit
 ) {
+    // ✅ Dialog内でも正しく Context を取得する
+    val context = LocalContext.current.applicationContext
+
     var showPublicKeys by remember { mutableStateOf(false) }
     var showThresholdPicker by remember { mutableStateOf(false) }
     var showSendFeePicker by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
+
+    // --- Wallet test states ---
+    val scope = rememberCoroutineScope()
+    var walletStatus by remember { mutableStateOf("未実行") }
+    var walletAddress by remember { mutableStateOf("") }
+    var walletBalance by remember { mutableStateOf<ULong?>(null) }
+    var sendToAddress by remember { mutableStateOf("") }
+    var lastTxId by remember { mutableStateOf("") }
 
     val screenBackground = accountScreenBackground()
     val cardBackground = accountCardBackground()
@@ -92,14 +107,12 @@ fun AccountScreen(
                         .padding(top = 0.dp, bottom = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    // 中央タイトル
                     Text(
                         text = "アカウント",
                         style = MaterialTheme.typography.titleLarge,
                         textAlign = TextAlign.Center,
                         maxLines = 1
                     )
-                    // 左上の「閉じる」
                     TextButton(
                         onClick = onClose,
                         modifier = Modifier.align(Alignment.CenterStart)
@@ -206,6 +219,150 @@ fun AccountScreen(
                         value = "$sendFee TPC",
                         onClick = { showSendFeePicker = true }
                     )
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                // ───── Wallet テスト ─────
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "ウォレットテスト",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = cardBackground)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp)
+                        ) {
+                            Text(
+                                text = "状態: $walletStatus",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (walletAddress.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "受取アドレス:\n$walletAddress",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            walletBalance?.let {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "残高: $it (sat相当)",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (lastTxId.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "TxId: $lastTxId",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            walletStatus = "sync中..."
+                                            runCatching {
+                                                WalletManager.getInstance(context).sync()
+                                            }.onSuccess {
+                                                walletStatus = "sync完了"
+                                            }.onFailure {
+                                                walletStatus = "sync失敗: ${it.message}"
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Sync") }
+
+                                Spacer(Modifier.width(10.dp))
+
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            walletStatus = "アドレス取得中..."
+                                            runCatching {
+                                                WalletManager.getInstance(context).getNewAddress()
+                                            }.onSuccess { addr ->
+                                                walletAddress = addr
+                                                walletStatus = "アドレス取得完了"
+                                            }.onFailure {
+                                                walletStatus = "アドレス失敗: ${it.message}"
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Address") }
+                            }
+
+                            Spacer(Modifier.height(10.dp))
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        walletStatus = "残高取得中..."
+                                        runCatching {
+                                            WalletManager.getInstance(context).getBalance()
+                                        }.onSuccess { bal ->
+                                            walletBalance = bal
+                                            walletStatus = "残高取得完了"
+                                        }.onFailure {
+                                            walletStatus = "残高失敗: ${it.message}"
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Balance") }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            OutlinedTextField(
+                                value = sendToAddress,
+                                onValueChange = { sendToAddress = it },
+                                placeholder = { Text("送金先アドレス") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(Modifier.height(10.dp))
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        walletStatus = "送金中..."
+                                        lastTxId = ""
+                                        val amountSat = sendFee.toULong()
+
+                                        runCatching {
+                                            WalletManager.getInstance(context)
+                                                .transfer(sendToAddress.trim(), amountSat)
+                                        }.onSuccess { txid ->
+                                            lastTxId = txid
+                                            walletStatus = "送金完了"
+                                        }.onFailure {
+                                            walletStatus = "送金失敗: ${it.message}"
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = sendToAddress.isNotBlank()
+                            ) { Text("Send (amount=$sendFee)") }
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(24.dp))
@@ -386,14 +543,12 @@ private fun PublicKeyListDialog(onClose: () -> Unit) {
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // ─── ヘッダー（アカウント / 公開鍵一覧） ───
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 0.dp, bottom = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    // 左「アカウント」（戻る）
                     TextButton(
                         onClick = onClose,
                         modifier = Modifier.align(Alignment.CenterStart)
@@ -403,7 +558,6 @@ private fun PublicKeyListDialog(onClose: () -> Unit) {
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
-                    // 中央タイトル
                     Text(
                         text = "公開鍵一覧",
                         style = MaterialTheme.typography.titleLarge,
@@ -477,7 +631,6 @@ private fun NumberPickerSheet(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        // ★ 背景：アカウントページの上に半透明黒で重ねる
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -568,7 +721,6 @@ private fun NumberPickerSheet(
                             }
                         }
 
-                        // 中央の選択行ハイライト
                         Box(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -581,7 +733,6 @@ private fun NumberPickerSheet(
                         )
                     }
 
-                    // スクロール位置から currentValue を更新
                     LaunchedEffect(
                         listState.firstVisibleItemIndex,
                         listState.firstVisibleItemScrollOffset
@@ -608,7 +759,6 @@ private fun SignOutConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    // 背景：半透明黒、中央カード：白
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
