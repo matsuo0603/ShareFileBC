@@ -1,13 +1,14 @@
 package com.example.sharefilebc
 
-import android.content.Context
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -25,12 +27,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,12 +51,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.ui.theme.IosGroupedBG
 import com.example.sharefilebc.ui.theme.ModalOverlay
 import com.example.sharefilebc.ui.theme.PureWhite
 import com.example.sharefilebc.ui.theme.rememberAvatarColors
-import kotlin.math.abs
-import com.example.sharefilebc.ui.theme.IosGroupedBG
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @Composable
 fun AccountScreen(
@@ -65,8 +71,11 @@ fun AccountScreen(
     onSendFeeChange: (Int) -> Unit,
     onSignOutConfirmed: () -> Unit
 ) {
-    // ✅ Dialog内でも正しく Context を取得する
     val context = LocalContext.current.applicationContext
+    val db = AppDatabase.getDatabase(context)
+    val accountViewModel: AccountViewModel = viewModel(
+        factory = AccountViewModelFactory(db.emailKeyDao())
+    )
 
     var showPublicKeys by remember { mutableStateOf(false) }
     var showThresholdPicker by remember { mutableStateOf(false) }
@@ -100,7 +109,7 @@ fun AccountScreen(
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // ───── ヘッダー（閉じる / アカウント） ─────
+                // ───── ヘッダー ─────
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -136,9 +145,7 @@ fun AccountScreen(
                             .padding(horizontal = 16.dp, vertical = 16.dp),
                         horizontalAlignment = Alignment.Start
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             AccountAvatar(
                                 name = name,
                                 email = email,
@@ -381,7 +388,7 @@ fun AccountScreen(
 
                 Spacer(Modifier.height(28.dp))
 
-                // ───── サインアウトボタン（カード） ─────
+                // ───── サインアウト ─────
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -409,7 +416,10 @@ fun AccountScreen(
     }
 
     if (showPublicKeys) {
-        PublicKeyListDialog(onClose = { showPublicKeys = false })
+        PublicKeyListDialog(
+            onClose = { showPublicKeys = false },
+            viewModel = accountViewModel
+        )
     }
 
     if (showThresholdPicker) {
@@ -446,6 +456,144 @@ fun AccountScreen(
                 onSignOutConfirmed()
             }
         )
+    }
+}
+
+@Composable
+private fun PublicKeyListDialog(
+    onClose: () -> Unit,
+    viewModel: AccountViewModel
+) {
+    val publicKeys by viewModel.publicKeys.collectAsState(initial = emptyList())
+    val isLoading by viewModel.isLoading.collectAsState(initial = true)
+
+    LaunchedEffect(Unit) {
+        viewModel.loadPublicKeys()
+    }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(accountScreenBackground())
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 0.dp, bottom = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    TextButton(
+                        onClick = onClose,
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    ) {
+                        Text(
+                            text = "アカウント",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Text(
+                        text = "公開鍵一覧",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                when {
+                    isLoading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+
+                    publicKeys.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "登録された公開鍵がありません",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(publicKeys, key = { it.email }) { item ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = accountCardBackground()
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(
+                                            horizontal = 16.dp,
+                                            vertical = 12.dp
+                                        )
+                                    ) {
+                                        // email（太字）
+                                        Text(
+                                            item.email,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.Medium
+                                        )
+
+                                        Spacer(Modifier.height(6.dp))
+
+                                        // ✅ A（手本）: trustLayerPublicKey を灰
+                                        if (item.trustLayerPublicKey.isNotBlank()) {
+                                            Text(
+                                                text = item.trustLayerPublicKey,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+
+                                        // ✅ A（手本）: derivedPublicKey を青
+                                        if (item.derivedPublicKey.isNotBlank()) {
+                                            Spacer(Modifier.height(6.dp))
+                                            Text(
+                                                text = item.derivedPublicKey,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -514,98 +662,12 @@ private fun OutlinedTokenInput() {
             )
             Spacer(Modifier.height(12.dp))
             Button(
-                onClick = { /* TODO: Submit token */ },
+                onClick = { /* TODO */ },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = tokenValue.isNotBlank(),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Submit Token")
-            }
-        }
-    }
-}
-
-@Composable
-private fun PublicKeyListDialog(onClose: () -> Unit) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(accountScreenBackground())
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 20.dp)
-                    .verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 0.dp, bottom = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    TextButton(
-                        onClick = onClose,
-                        modifier = Modifier.align(Alignment.CenterStart)
-                    ) {
-                        Text(
-                            text = "アカウント",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Text(
-                        text = "公開鍵一覧",
-                        style = MaterialTheme.typography.titleLarge,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1
-                    )
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                val dummyKeys = listOf(
-                    "sou.koga.for.business@gmail.com" to
-                            "0258313a355bda7fd3a28060c048051a96882ae8cc5521f33f971285ea3f5ead9e\n160ppyut-1cqls9jb9ps-dqjxdvknaiiet",
-                    "sou.koga@gmail.com" to
-                            "020a06c3de30746ac8b0d372e2d7986ecabbf18d2640d3cf1812bbec0b4b012b\n1SChRMCvJ0a9ldRdmmxjFUM5A0ebHq0t"
-                )
-
-                dummyKeys.forEachIndexed { index, (title, body) ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = accountCardBackground())
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(
-                                horizontal = 16.dp,
-                                vertical = 12.dp
-                            )
-                        ) {
-                            Text(
-                                title,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                body,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    if (index != dummyKeys.lastIndex) {
-                        Spacer(Modifier.height(12.dp))
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
             }
         }
     }
@@ -691,7 +753,7 @@ private fun NumberPickerSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .align(Alignment.Center),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            contentPadding = PaddingValues(
                                 vertical = (pickerHeight - itemHeight) / 2
                             )
                         ) {
@@ -772,9 +834,7 @@ private fun SignOutConfirmDialog(
             Card(
                 modifier = Modifier.padding(horizontal = 32.dp),
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = PureWhite
-                )
+                colors = CardDefaults.cardColors(containerColor = PureWhite)
             ) {
                 Column(
                     modifier = Modifier
@@ -796,22 +856,17 @@ private fun SignOutConfirmDialog(
                     Spacer(Modifier.height(16.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceEvenly,
+                        horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         TextButton(onClick = onDismiss) {
-                            Text(
-                                text = "キャンセル",
-                                color = MaterialTheme.colorScheme.primary,
-                                textAlign = TextAlign.Center
-                            )
+                            Text("キャンセル", color = MaterialTheme.colorScheme.primary)
                         }
                         TextButton(onClick = onConfirm) {
                             Text(
                                 text = "サインアウト",
                                 color = MaterialTheme.colorScheme.error,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
