@@ -12,10 +12,18 @@ import java.io.IOException
 interface PublicKeyApi {
     suspend fun registerMyPublicKey(email: String, pubKeyHex: String): Result<Unit>
     suspend fun fetchPublicKey(email: String): Result<String?>
+    suspend fun submitOneTimeToken(token: String): Result<TokenSubmitResult>
+}
+
+sealed class TokenSubmitResult {
+    data object Success : TokenSubmitResult()
+    data object NotFound : TokenSubmitResult()
+    data class Failed(val code: Int) : TokenSubmitResult()
 }
 
 class PublicKeyApiClient(
     private val baseUrl: String = "https://sharefilebcapp.web.app/api/pubkey",
+    private val tokenBaseUrl: String = "https://sharefilebcapp.web.app",
     private val client: OkHttpClient = OkHttpClient()
 ) : PublicKeyApi {
 
@@ -62,6 +70,27 @@ class PublicKeyApiClient(
                 val key = json.optString("publicKeyHex")
                     .ifBlank { json.optString("pubKeyHex") }
                 key.takeIf { it.isNotBlank() }
+            }
+        }
+    }
+
+    override suspend fun submitOneTimeToken(token: String): Result<TokenSubmitResult> {
+        val url = "$tokenBaseUrl/blockchain-mail-auth/tokens.json"
+        val jsonBody = JSONObject()
+            .put("token", token)
+            .toString()
+        val request = Request.Builder()
+            .url(url)
+            .post(jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                when (response.code) {
+                    201 -> TokenSubmitResult.Success
+                    404 -> TokenSubmitResult.NotFound
+                    else -> TokenSubmitResult.Failed(response.code)
+                }
             }
         }
     }

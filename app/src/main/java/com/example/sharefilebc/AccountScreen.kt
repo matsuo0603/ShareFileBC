@@ -53,6 +53,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.network.PublicKeyApiClient
+import com.example.sharefilebc.network.TokenSubmitResult
 import com.example.sharefilebc.ui.theme.IosGroupedBG
 import com.example.sharefilebc.ui.theme.ModalOverlay
 import com.example.sharefilebc.ui.theme.PureWhite
@@ -81,14 +83,6 @@ fun AccountScreen(
     var showThresholdPicker by remember { mutableStateOf(false) }
     var showSendFeePicker by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
-
-    // --- Wallet test states ---
-    val scope = rememberCoroutineScope()
-    var walletStatus by remember { mutableStateOf("未実行") }
-    var walletAddress by remember { mutableStateOf("") }
-    var walletBalance by remember { mutableStateOf<ULong?>(null) }
-    var sendToAddress by remember { mutableStateOf("") }
-    var lastTxId by remember { mutableStateOf("") }
 
     val screenBackground = accountScreenBackground()
     val cardBackground = accountCardBackground()
@@ -229,150 +223,6 @@ fun AccountScreen(
                 }
 
                 Spacer(Modifier.height(20.dp))
-
-                // ───── Wallet テスト ─────
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "ウォレットテスト",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = cardBackground)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp)
-                        ) {
-                            Text(
-                                text = "状態: $walletStatus",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (walletAddress.isNotBlank()) {
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = "受取アドレス:\n$walletAddress",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            walletBalance?.let {
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = "残高: $it (sat相当)",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            if (lastTxId.isNotBlank()) {
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = "TxId: $lastTxId",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            walletStatus = "sync中..."
-                                            runCatching {
-                                                WalletManager.getInstance(context).sync()
-                                            }.onSuccess {
-                                                walletStatus = "sync完了"
-                                            }.onFailure {
-                                                walletStatus = "sync失敗: ${it.message}"
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Sync") }
-
-                                Spacer(Modifier.width(10.dp))
-
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            walletStatus = "アドレス取得中..."
-                                            runCatching {
-                                                WalletManager.getInstance(context).getNewAddress()
-                                            }.onSuccess { addr ->
-                                                walletAddress = addr
-                                                walletStatus = "アドレス取得完了"
-                                            }.onFailure {
-                                                walletStatus = "アドレス失敗: ${it.message}"
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("Address") }
-                            }
-
-                            Spacer(Modifier.height(10.dp))
-
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        walletStatus = "残高取得中..."
-                                        runCatching {
-                                            WalletManager.getInstance(context).getBalance()
-                                        }.onSuccess { bal ->
-                                            walletBalance = bal
-                                            walletStatus = "残高取得完了"
-                                        }.onFailure {
-                                            walletStatus = "残高失敗: ${it.message}"
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Balance") }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            OutlinedTextField(
-                                value = sendToAddress,
-                                onValueChange = { sendToAddress = it },
-                                placeholder = { Text("送金先アドレス") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-
-                            Spacer(Modifier.height(10.dp))
-
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        walletStatus = "送金中..."
-                                        lastTxId = ""
-                                        val amountSat = sendFee.toULong()
-
-                                        runCatching {
-                                            WalletManager.getInstance(context)
-                                                .transfer(sendToAddress.trim(), amountSat)
-                                        }.onSuccess { txid ->
-                                            lastTxId = txid
-                                            walletStatus = "送金完了"
-                                        }.onFailure {
-                                            walletStatus = "送金失敗: ${it.message}"
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = sendToAddress.isNotBlank()
-                            ) { Text("Send (amount=$sendFee)") }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(24.dp))
 
                 // ───── ONE-TIME TOKEN ─────
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -647,6 +497,11 @@ private fun TokenSettingRow(
 @Composable
 private fun OutlinedTokenInput() {
     var tokenValue by remember { mutableStateOf("") }
+    var statusMessage by remember { mutableStateOf("") }
+    var isSubmitting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val api = remember { PublicKeyApiClient() }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -655,19 +510,59 @@ private fun OutlinedTokenInput() {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             OutlinedTextField(
                 value = tokenValue,
-                onValueChange = { tokenValue = it },
+                onValueChange = {
+                    tokenValue = it
+                    if (statusMessage.isNotBlank()) {
+                        statusMessage = ""
+                    }
+                },
                 placeholder = { Text("Enter token") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
             Spacer(Modifier.height(12.dp))
             Button(
-                onClick = { /* TODO */ },
+                onClick = {
+                    val trimmed = tokenValue.trim()
+                    if (trimmed.isBlank()) return@Button
+
+                    isSubmitting = true
+                    statusMessage = ""
+                    scope.launch {
+                        api.submitOneTimeToken(trimmed)
+                            .onSuccess { result ->
+                                statusMessage = when (result) {
+                                    TokenSubmitResult.Success -> "送信しました"
+                                    TokenSubmitResult.NotFound -> "トークンが存在しません"
+                                    is TokenSubmitResult.Failed -> {
+                                        "送信に失敗しました（HTTP ${result.code}）"
+                                    }
+                                }
+                            }
+                            .onFailure {
+                                statusMessage = "通信に失敗しました"
+                            }
+                        isSubmitting = false
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = tokenValue.isNotBlank(),
+                enabled = tokenValue.isNotBlank() && !isSubmitting,
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Submit Token")
+            }
+
+            if (statusMessage.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when {
+                        statusMessage.contains("送信しました") -> Color(0xFF2E7D32)
+                        statusMessage.contains("失敗") -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
             }
         }
     }
