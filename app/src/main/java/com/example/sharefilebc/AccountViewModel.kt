@@ -4,18 +4,26 @@ package com.example.sharefilebc
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.sharefilebc.data.BlockedSenderDao
+import com.example.sharefilebc.data.BlockedSenderEntity
+import com.example.sharefilebc.data.BlockedSenderSource
 import com.example.sharefilebc.data.EmailKeyDao
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.math.BigInteger
 import java.security.MessageDigest
 import org.bouncycastle.jcajce.provider.digest.RIPEMD160
 
 class AccountViewModel(
-    private val emailKeyDao: EmailKeyDao
+    private val emailKeyDao: EmailKeyDao,
+    private val blockedSenderDao: BlockedSenderDao,
+    private val walletSettingsManager: WalletSettingsManager
 ) : ViewModel() {
 
     private val _publicKeys = MutableStateFlow<List<RegisteredPublicKey>>(emptyList())
@@ -24,10 +32,18 @@ class AccountViewModel(
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private val _blockedSenders = MutableStateFlow<List<BlockedSenderUi>>(emptyList())
+    val blockedSenders: StateFlow<List<BlockedSenderUi>> = _blockedSenders.asStateFlow()
+
+    private val _networkConfig = MutableStateFlow(walletSettingsManager.getNetworkConfig())
+    val networkConfig: StateFlow<WalletNetworkConfig> = _networkConfig.asStateFlow()
+
     private var loadJob: Job? = null
+    private var blockedJob: Job? = null
 
     init {
         loadPublicKeys()
+        loadBlockedSenders()
     }
 
     fun loadPublicKeys() {
@@ -48,6 +64,57 @@ class AccountViewModel(
                 _isLoading.value = false
             }
         }
+    }
+
+    fun loadBlockedSenders() {
+        blockedJob?.cancel()
+        blockedJob = viewModelScope.launch {
+            blockedSenderDao.getAll().collect { list ->
+                _blockedSenders.value = list.map { entity ->
+                    BlockedSenderUi(
+                        email = entity.email,
+                        reason = entity.reason,
+                        source = entity.source,
+                        createdAt = entity.createdAt
+                    )
+                }
+            }
+        }
+    }
+
+    fun addBlockedSender(email: String, reason: String?) {
+        val trimmed = email.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            blockedSenderDao.upsert(
+                BlockedSenderEntity(
+                    email = trimmed,
+                    reason = reason?.takeIf { it.isNotBlank() },
+                    source = BlockedSenderSource.MANUAL.name,
+                    createdAt = nowIsoString()
+                )
+            )
+        }
+    }
+
+    fun removeBlockedSender(email: String) {
+        viewModelScope.launch {
+            blockedSenderDao.deleteByEmail(email)
+        }
+    }
+
+    fun refreshNetworkConfig() {
+        _networkConfig.value = walletSettingsManager.getNetworkConfig()
+    }
+
+    fun updateNetworkConfig(config: WalletNetworkConfig) {
+        walletSettingsManager.saveNetworkConfig(config)
+        _networkConfig.value = config
+    }
+
+    private fun nowIsoString(): String {
+        val formatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault())
+        return formatter.format(Instant.now())
     }
 
     /**
@@ -140,13 +207,22 @@ data class RegisteredPublicKey(
     val derivedPublicKey: String
 )
 
+data class BlockedSenderUi(
+    val email: String,
+    val reason: String?,
+    val source: String,
+    val createdAt: String
+)
+
 class AccountViewModelFactory(
-    private val emailKeyDao: com.example.sharefilebc.data.EmailKeyDao
+    private val emailKeyDao: com.example.sharefilebc.data.EmailKeyDao,
+    private val blockedSenderDao: com.example.sharefilebc.data.BlockedSenderDao,
+    private val walletSettingsManager: WalletSettingsManager
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(AccountViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return AccountViewModel(emailKeyDao) as T
+            return AccountViewModel(emailKeyDao, blockedSenderDao, walletSettingsManager) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

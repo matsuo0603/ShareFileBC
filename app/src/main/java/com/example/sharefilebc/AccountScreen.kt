@@ -28,6 +28,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -76,10 +78,16 @@ fun AccountScreen(
     val context = LocalContext.current.applicationContext
     val db = AppDatabase.getDatabase(context)
     val accountViewModel: AccountViewModel = viewModel(
-        factory = AccountViewModelFactory(db.emailKeyDao())
+        factory = AccountViewModelFactory(
+            db.emailKeyDao(),
+            db.blockedSenderDao(),
+            WalletSettingsManager.getInstance(context)
+        )
     )
 
     var showPublicKeys by remember { mutableStateOf(false) }
+    var showBlockedSenders by remember { mutableStateOf(false) }
+    var showNetworkSettings by remember { mutableStateOf(false) }
     var showThresholdPicker by remember { mutableStateOf(false) }
     var showSendFeePicker by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
@@ -167,32 +175,18 @@ fun AccountScreen(
                 Spacer(Modifier.height(24.dp))
 
                 // ───── 公開鍵一覧 ─────
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showPublicKeys = true },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = cardBackground)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "公開鍵一覧",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Text(
-                            text = "›",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                SectionRow(
+                    title = "公開鍵一覧",
+                    onClick = { showPublicKeys = true }
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                // ───── 返金拒否リスト ─────
+                SectionRow(
+                    title = "返金拒否リスト",
+                    onClick = { showBlockedSenders = true }
+                )
 
                 Spacer(Modifier.height(20.dp))
 
@@ -236,6 +230,14 @@ fun AccountScreen(
                     OutlinedTokenInput()
                 }
 
+                Spacer(Modifier.height(20.dp))
+
+                // ───── 環境設定 ─────
+                SectionRow(
+                    title = "環境設定",
+                    onClick = { showNetworkSettings = true }
+                )
+
                 Spacer(Modifier.height(28.dp))
 
                 // ───── サインアウト ─────
@@ -269,6 +271,24 @@ fun AccountScreen(
         PublicKeyListDialog(
             onClose = { showPublicKeys = false },
             viewModel = accountViewModel
+        )
+    }
+
+    if (showBlockedSenders) {
+        BlockedSendersDialog(
+            onClose = { showBlockedSenders = false },
+            viewModel = accountViewModel
+        )
+    }
+
+    if (showNetworkSettings) {
+        NetworkSettingsDialog(
+            onClose = { showNetworkSettings = false },
+            viewModel = accountViewModel,
+            onConfigApplied = {
+                WalletManager.getInstance(context).resetWallet()
+                showNetworkSettings = false
+            }
         )
     }
 
@@ -448,6 +468,378 @@ private fun PublicKeyListDialog(
 }
 
 @Composable
+private fun BlockedSendersDialog(
+    onClose: () -> Unit,
+    viewModel: AccountViewModel
+) {
+    val blockedSenders by viewModel.blockedSenders.collectAsState(initial = emptyList())
+    var emailInput by remember { mutableStateOf("") }
+    var reasonInput by remember { mutableStateOf("") }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(accountScreenBackground())
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 0.dp, bottom = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    TextButton(
+                        onClick = onClose,
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    ) {
+                        Text(
+                            text = "アカウント",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Text(
+                        text = "返金拒否リスト",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = accountCardBackground())
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text = "送信者を追加",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            placeholder = { Text("メールアドレス") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = reasonInput,
+                            onValueChange = { reasonInput = it },
+                            placeholder = { Text("拒否理由（任意）") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                viewModel.addBlockedSender(emailInput, reasonInput)
+                                emailInput = ""
+                                reasonInput = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = emailInput.isNotBlank(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("追加")
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (blockedSenders.isEmpty()) {
+                    Text(
+                        text = "登録された拒否リストはありません",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 16.dp)
+                    ) {
+                        items(blockedSenders, key = { it.email }) { item ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = accountCardBackground()
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(
+                                        horizontal = 16.dp,
+                                        vertical = 12.dp
+                                    )
+                                ) {
+                                    Text(
+                                        text = item.email,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    if (!item.reason.isNullOrBlank()) {
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = item.reason,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "登録元: ${item.source}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(onClick = { viewModel.removeBlockedSender(item.email) }) {
+                                            Text("解除", color = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NetworkSettingsDialog(
+    onClose: () -> Unit,
+    viewModel: AccountViewModel,
+    onConfigApplied: () -> Unit
+) {
+    val appContext = LocalContext.current.applicationContext
+    val config by viewModel.networkConfig.collectAsState()
+    var selectedPreset by remember { mutableStateOf(config.preset) }
+    var selectedMode by remember { mutableStateOf(config.networkMode) }
+    var networkIdInput by remember { mutableStateOf(config.networkId.toString()) }
+    var genesisHashInput by remember { mutableStateOf(config.genesisHash) }
+    var esploraUrlInput by remember { mutableStateOf(config.esploraUrl) }
+    var showPresetMenu by remember { mutableStateOf(false) }
+    var showModeMenu by remember { mutableStateOf(false) }
+    // Kotlin 1.9+ : Enum.values() より Enum.entries 推奨
+    val networkModes = remember { com.chaintope.tapyrus.wallet.Network.entries }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(accountScreenBackground())
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 0.dp, bottom = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    TextButton(
+                        onClick = onClose,
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    ) {
+                        Text(
+                            text = "アカウント",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Text(
+                        text = "環境設定",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = accountCardBackground())
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text = "ネットワークプリセット",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Box {
+                            Button(
+                                onClick = { showPresetMenu = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = when (selectedPreset) {
+                                        WalletNetworkPreset.PROD -> "本番（既定）"
+                                        WalletNetworkPreset.CUSTOM -> "カスタム"
+                                    }
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showPresetMenu,
+                                onDismissRequest = { showPresetMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("本番（既定）") },
+                                    onClick = {
+                                        selectedPreset = WalletNetworkPreset.PROD
+                                        showPresetMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("カスタム") },
+                                    onClick = {
+                                        selectedPreset = WalletNetworkPreset.CUSTOM
+                                        showPresetMenu = false
+                                    }
+                                )
+                            }
+                        }
+
+                        if (selectedPreset == WalletNetworkPreset.CUSTOM) {
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = "カスタム設定",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Box {
+                                Button(
+                                    onClick = { showModeMenu = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Network: ${selectedMode.name}")
+                                }
+                                DropdownMenu(
+                                    expanded = showModeMenu,
+                                    onDismissRequest = { showModeMenu = false }
+                                ) {
+                                    networkModes.forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = { Text(mode.name) },
+                                            onClick = {
+                                                selectedMode = mode
+                                                showModeMenu = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = networkIdInput,
+                                onValueChange = { networkIdInput = it },
+                                placeholder = { Text("networkId") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = genesisHashInput,
+                                onValueChange = { genesisHashInput = it },
+                                placeholder = { Text("genesisHash") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = esploraUrlInput,
+                                onValueChange = { esploraUrlInput = it },
+                                placeholder = { Text("esploraUrl") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        } else {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "既定の Tapyrus 本番ネットワーク設定を使用します。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                val newConfig = if (selectedPreset == WalletNetworkPreset.PROD) {
+                                    WalletSettingsManager.getInstance(appContext).defaultNetworkConfig()
+
+                                } else {
+                                    WalletNetworkConfig(
+                                        preset = WalletNetworkPreset.CUSTOM,
+                                        networkMode = selectedMode,
+                                        networkId = networkIdInput.toUIntOrNull() ?: config.networkId,
+                                        genesisHash = genesisHashInput.trim(),
+                                        esploraUrl = esploraUrlInput.trim()
+                                    )
+                                }
+                                viewModel.updateNetworkConfig(newConfig)
+                                onConfigApplied()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("保存")
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    text = "切替後はウォレット同期が必要です。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun accountScreenBackground(): Color {
     val isDark = isSystemInDarkTheme()
     return if (isDark) MaterialTheme.colorScheme.background else IosGroupedBG
@@ -488,6 +880,39 @@ private fun TokenSettingRow(
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun SectionRow(
+    title: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = accountCardBackground())
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "›",
+                style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }

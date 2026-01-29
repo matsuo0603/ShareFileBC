@@ -33,6 +33,7 @@ class HomeActivity : ComponentActivity() {
     companion object {
         private const val TAG = "HomeActivity"
     }
+
     private data class DeepLinkParams(
         val folderId: String?,
         val fileId: String?,
@@ -42,6 +43,10 @@ class HomeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        lifecycleScope.launch {
+            WalletManager.getInstance(this@HomeActivity).setupWallet()
+        }
 
         // 🔐 Tapyrus ウォレットの受取アドレス取得（鍵生成〜派生は TapyrusWalletManager に集約）
         try {
@@ -63,7 +68,6 @@ class HomeActivity : ComponentActivity() {
         val privHex = walletManager.getCurrentPrivateKeyHex()
         Log.d(TAG, "Tapyrus private key HEX = ${maskHex(privHex)}")
 
-
         val deepLinkUri: Uri? = intent?.data
         val deepLinkParams = parseDeepLink(deepLinkUri)
         val pubKeyLink = PublicKeyLinkBuilder.parse(deepLinkUri)
@@ -73,6 +77,7 @@ class HomeActivity : ComponentActivity() {
         val fileIdFromExtra: String? = intent.getStringExtra("fileId")
         val senderKeyFromExtra: String? = intent.getStringExtra("senderPublicKey")
         val recipientEmailFromExtra: String? = intent.getStringExtra("recipientEmail")
+
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
         val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
             if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
@@ -141,9 +146,9 @@ class HomeActivity : ComponentActivity() {
                         Log.e("DEBUG", "EmailKeyEntity dump failed", e)
                     }
                 }
-
             }
         }
+
         // ✅ アカウント + Drive スコープを両方チェック
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
         val hasDriveScope = account?.let {
@@ -170,6 +175,35 @@ class HomeActivity : ComponentActivity() {
             return
         }
 
+        // ✅ ここから先は「サインイン済み & DriveスコープOK」
+        // --- 初期トークン配布申請（Swift版 requestInitialTokensIfNeeded 相当） ---
+        account.email?.let { email ->
+            lifecycleScope.launch {
+                runCatching {
+                    val wm = WalletManager.getInstance(applicationContext)
+
+                    // サーバへ渡す受取アドレス（TPCのP2PKH）
+                    val address = wm.getNewAddress()
+
+                    val ok = TokenRequestManager.requestInitialTokensIfNeeded(
+                        context = applicationContext,
+                        email = email,
+                        p2pkhAddress = address,
+                        tokenType = 3,
+                        lang = "ja"
+                    )
+
+                    if (ok) {
+                        Log.d(TAG, "🟢 initial token request OK. email=$email addr=$address")
+                    } else {
+                        Log.e(TAG, "🟠 initial token request FAILED. email=$email addr=$address")
+                    }
+                }.onFailure { e ->
+                    Log.e(TAG, "🟠 initial token request ERROR", e)
+                }
+            }
+        }
+
         account.email?.let { email ->
             lifecycleScope.launch {
                 val publicKeyHex = walletManager.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
@@ -184,6 +218,7 @@ class HomeActivity : ComponentActivity() {
                 }
             }
         }
+
         setContent {
             ShareFileBCTheme {
                 // DeepLinkで来たときは Shared を初期表示、それ以外は Home
@@ -225,6 +260,7 @@ class HomeActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
     }
+
     private fun parseDeepLink(uri: Uri?): DeepLinkParams {
         if (uri == null) return DeepLinkParams(null, null, null, null)
 
@@ -249,6 +285,7 @@ class HomeActivity : ComponentActivity() {
             recipientEmail = to
         )
     }
+
     private fun maskHex(hex: String, keep: Int = 6): String =
         if (hex.length <= keep) hex else hex.take(keep) + "..."
 }

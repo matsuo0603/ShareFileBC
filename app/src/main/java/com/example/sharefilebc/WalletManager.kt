@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.chaintope.tapyrus.wallet.Config
 import com.chaintope.tapyrus.wallet.HdWallet
-import com.chaintope.tapyrus.wallet.Network
 import com.chaintope.tapyrus.wallet.TransferParams
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -42,15 +41,12 @@ class WalletManager private constructor(
     }
 
     /**
-     * Swift版から移植した Tapyrus 接続設定
+     * Tapyrus 接続設定
+     *
+     * - 既定値は WalletSettingsManager の PROD プリセット
+     * - AccountScreen の「ネットワーク設定」で CUSTOM を保存した場合はそちらを参照
      */
     private object WalletRuntimeConfig {
-        val networkMode: Network = Network.PROD
-        val networkId: UInt = 1195501765u
-        val genesisHash =
-            "529fc8b00a65d3f9679052d5f5c63bee961e955ce2e78f47d715c2d357fbdbe5"
-        val esploraUrl = "https://index-lab.msc.trustlayer.jp"
-
         /**
          * TPC（無色コイン）は colorId を渡さず null にする（Tapyrus Wallet SDK の仕様）
          *
@@ -70,11 +66,12 @@ class WalletManager private constructor(
         val masterXprv = KeyManager.getInstance(appContext).getOrCreateMasterXprv()
         val dbPath = appContext.getDatabasePath("tapyrus_wallet.db").absolutePath
 
+        val networkConfig = WalletSettingsManager.getInstance(appContext).getNetworkConfig()
         val config = Config(
-            networkMode = WalletRuntimeConfig.networkMode,
-            networkId = WalletRuntimeConfig.networkId,
-            genesisHash = WalletRuntimeConfig.genesisHash,
-            esploraUrl = WalletRuntimeConfig.esploraUrl,
+            networkMode = networkConfig.networkMode,
+            networkId = networkConfig.networkId,
+            genesisHash = networkConfig.genesisHash,
+            esploraUrl = networkConfig.esploraUrl,
             masterKey = masterXprv,
             dbFilePath = dbPath
         )
@@ -83,6 +80,17 @@ class WalletManager private constructor(
         wallet = w
         Log.d(TAG, "HdWallet initialized. db=$dbPath")
         w
+    }
+
+    /**
+     * ウォレット初期化だけを行う（HomeActivity / DebugWalletActivity から呼ぶ用）。
+     *
+     * - sync まではしない
+     * - “setupWallet() が無い” エラー対策
+     */
+    suspend fun setupWallet() = withContext(Dispatchers.IO) {
+        getOrCreateWallet()
+        Log.d(TAG, "setupWallet done")
     }
 
     /** ブロックチェーン同期 */
@@ -145,5 +153,9 @@ class WalletManager private constructor(
             if (Security.getProvider("BC") != null) return
         } catch (_: Exception) {
         }
+    }
+
+    fun resetWallet() {
+        wallet = null
     }
 }

@@ -15,8 +15,9 @@ import androidx.room.RoomDatabase
         MySharedFolderEntity::class,
         ReceivedFileEntity::class,
         RefundTaskEntity::class,
+        BlockedSenderEntity::class,
     ],
-    version = 11
+    version = 12
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
@@ -27,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun mySharedFolderDao(): MySharedFolderDao
     abstract fun receivedFileDao(): ReceivedFileDao
     abstract fun refundTaskDao(): RefundTaskDao
+    abstract fun blockedSenderDao(): BlockedSenderDao
 
     companion object {
         @Volatile

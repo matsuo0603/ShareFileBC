@@ -11,53 +11,66 @@ import kotlinx.coroutines.launch
 
 class DebugWalletActivity : AppCompatActivity() {
 
-    private lateinit var wallet: WalletManager
+    private lateinit var walletManager: WalletManager
     private lateinit var logView: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        wallet = WalletManager.getInstance(this)
+        walletManager = WalletManager.getInstance(this)
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
         }
 
-        fun button(label: String, action: () -> Unit) =
-            Button(this).apply {
-                text = label
-                setOnClickListener { action() }
-            }
+        fun addButton(title: String, onClick: () -> Unit) {
+            layout.addView(Button(this).apply {
+                text = title
+                setOnClickListener { onClick() }
+            })
+        }
 
         logView = TextView(this)
 
-        layout.addView(button("Sync") { sync() })
-        layout.addView(button("Balance") { balance() })
-        layout.addView(button("New Address") { newAddress() })
+        // ✅ 受取アドレス（新規発行）
+        addButton("Get New Address") {
+            lifecycleScope.launch {
+                runCatching { walletManager.getNewAddress() }
+                    .onSuccess { append("new address=$it") }
+                    .onFailure { append("getNewAddress failed: ${it.message}") }
+            }
+        }
+
+        // ✅ 同期
+        addButton("Sync") {
+            lifecycleScope.launch {
+                runCatching { walletManager.sync() }
+                    .onSuccess { append("sync done") }
+                    .onFailure { append("sync failed: ${it.message}") }
+            }
+        }
+
+        // ✅ 残高
+        addButton("Balance") {
+            lifecycleScope.launch {
+                runCatching { walletManager.getBalance() }
+                    .onSuccess { append("balance=$it") }
+                    .onFailure { append("balance failed: ${it.message}") }
+            }
+        }
+
+        // ✅ ウォレット再初期化（設定変更後の確認用）
+        addButton("Reset Wallet (re-init next call)") {
+            runCatching { walletManager.resetWallet() }
+                .onSuccess { append("wallet reset") }
+                .onFailure { append("reset failed: ${it.message}") }
+        }
+
         layout.addView(logView)
 
-        val scroll = ScrollView(this)
-        scroll.addView(layout)
+        val scroll = ScrollView(this).apply { addView(layout) }
         setContentView(scroll)
-    }
-
-    private fun sync() = launchIO("sync") { wallet.sync() }
-
-    private fun balance() = launchIO("balance") {
-        append("balance = ${wallet.getBalance()} sat")
-    }
-
-    private fun newAddress() = launchIO("address") {
-        append("address = ${wallet.getNewAddress()}")
-    }
-
-    private fun launchIO(label: String, block: suspend () -> Unit) {
-        append("▶ $label")
-        lifecycleScope.launch {
-            runCatching { block() }
-                .onFailure { append("❌ ${it::class.simpleName}: ${it.message}") }
-        }
     }
 
     private fun append(msg: String) {

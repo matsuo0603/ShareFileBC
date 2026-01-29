@@ -263,9 +263,16 @@ fun HomeScreen(
     // TapyrusWalletManager から現在の受取アドレスを 1 回取得
     LaunchedEffect(Unit) {
         val manager = WalletManager.getInstance(context)
-        val addr = runCatching { manager.getNewAddress() }.getOrNull()
-        walletAddress = addr
+
+        // ✅ suspend 関数は runCatching のラムダ内で呼べないため try/catch で扱う
+        walletAddress = try {
+            manager.getNewAddress()
+        } catch (e: Exception) {
+            Log.e("HomeScreen", "getNewAddress failed", e)
+            null
+        }
     }
+
 
     LaunchedEffect(registrationSnackbarMessage) {
         registrationSnackbarMessage?.let {
