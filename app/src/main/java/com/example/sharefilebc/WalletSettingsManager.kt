@@ -13,13 +13,16 @@ class WalletSettingsManager private constructor(context: Context) {
         private const val KEY_GENESIS_HASH = "genesis_hash"
         private const val KEY_ESPLORA_URL = "esplora_url"
         private const val KEY_PRESET = "network_preset"
+        private const val KEY_TOKEN_TRANSFER_AMOUNT = "token_transfer_amount"
+        private const val KEY_PAYMENT_THRESHOLD = "payment_threshold"
 
         private const val DEFAULT_PRESET = "PROD"
         private const val DEFAULT_NETWORK_ID = 1195501765u
         private const val DEFAULT_GENESIS_HASH =
             "529fc8b00a65d3f9679052d5f5c63bee961e955ce2e78f47d715c2d357fbdbe5"
         private const val DEFAULT_ESPLORA_URL = "https://index-lab.msc.trustlayer.jp"
-
+        private const val DEFAULT_TOKEN_TRANSFER_AMOUNT = 1L
+        private const val DEFAULT_PAYMENT_THRESHOLD = 1L
         @Volatile
         private var INSTANCE: WalletSettingsManager? = null
 
@@ -65,6 +68,28 @@ class WalletSettingsManager private constructor(context: Context) {
             .putLong(KEY_NETWORK_ID, config.networkId.toLong())
             .putString(KEY_GENESIS_HASH, config.genesisHash)
             .putString(KEY_ESPLORA_URL, config.esploraUrl)
+            .apply()
+    }
+
+    fun getTokenTransferAmount(): ULong {
+        val value = prefs.getLong(KEY_TOKEN_TRANSFER_AMOUNT, DEFAULT_TOKEN_TRANSFER_AMOUNT)
+        return value.toULong()
+    }
+
+    fun setTokenTransferAmount(amount: Long) {
+        prefs.edit()
+            .putLong(KEY_TOKEN_TRANSFER_AMOUNT, amount)
+            .apply()
+    }
+
+    fun getPaymentThreshold(): ULong {
+        val value = prefs.getLong(KEY_PAYMENT_THRESHOLD, DEFAULT_PAYMENT_THRESHOLD)
+        return value.toULong()
+    }
+
+    fun setPaymentThreshold(amount: Long) {
+        prefs.edit()
+            .putLong(KEY_PAYMENT_THRESHOLD, amount)
             .apply()
     }
 

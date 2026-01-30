@@ -105,6 +105,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val walletSettingsManager = remember { WalletSettingsManager.getInstance(context) }
+
 
     val db = remember { AppDatabase.getDatabase(context) }
     val userDao = db.userDao()
@@ -117,8 +119,12 @@ fun HomeScreen(
     var isUploading by remember { mutableStateOf(false) }
     var isRegistering by remember { mutableStateOf(false) }
     var showAccountScreen by remember { mutableStateOf(false) }
-    var tokenThreshold by remember { mutableStateOf(1) }
-    var sendFee by remember { mutableStateOf(1) }
+    var tokenThreshold by remember {
+        mutableStateOf(walletSettingsManager.getPaymentThreshold().toLong().toInt())
+    }
+    var sendFee by remember {
+        mutableStateOf(walletSettingsManager.getTokenTransferAmount().toLong().toInt())
+    }
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
@@ -492,8 +498,14 @@ fun HomeScreen(
             tokenThreshold = tokenThreshold,
             sendFee = sendFee,
             onClose = { showAccountScreen = false },
-            onTokenThresholdChange = { tokenThreshold = it },
-            onSendFeeChange = { sendFee = it },
+            onTokenThresholdChange = {
+                tokenThreshold = it
+                walletSettingsManager.setPaymentThreshold(it.toLong())
+            },
+            onSendFeeChange = {
+                sendFee = it
+                walletSettingsManager.setTokenTransferAmount(it.toLong())
+            },
             onSignOutConfirmed = signOutAndNavigate
         )
     }
