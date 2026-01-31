@@ -8,7 +8,7 @@ import androidx.room.Query
 @Dao
 interface RefundTaskDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(entity: RefundTaskEntity)
+    suspend fun insert(entity: RefundTaskEntity): Long
 
     @Query("SELECT * FROM refund_tasks")
     suspend fun getAll(): List<RefundTaskEntity>

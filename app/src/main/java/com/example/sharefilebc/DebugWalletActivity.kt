@@ -7,16 +7,17 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.RefundTaskEntity
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import android.widget.Toast
 import android.widget.EditText
+import android.util.Log
 
 
 class DebugWalletActivity : AppCompatActivity() {
@@ -109,8 +110,14 @@ class DebugWalletActivity : AppCompatActivity() {
         addButton("Balance") {
             lifecycleScope.launch {
                 runCatching { walletManager.getBalance() }
-                    .onSuccess { append("balance=$it") }
-                    .onFailure { append("balance failed: ${it.message}") }
+                    .onSuccess {
+                        Log.d(LogTags.TAG_PAYMENT, "send txid=$it")
+                        append("transfer txid=$it")
+                    }
+                    .onFailure {
+                        Log.e(LogTags.TAG_PAYMENT, "transfer failed", it)
+                        append("transfer failed: ${it.message}")
+                    }
             }
         }
 
@@ -143,16 +150,20 @@ class DebugWalletActivity : AppCompatActivity() {
                             append("blocked sender=$senderId (refund task skipped)")
                         } else if (diff >= threshold) {
                             val createdAt = nowIsoString()
-                            withContext(Dispatchers.IO) {
+                            val refundTaskId = withContext(Dispatchers.IO) {
                                 refundTaskDao.insert(
                                     RefundTaskEntity(
                                         senderPublicKey = senderId,
                                         contextJSON = """{"amount":"$diff","threshold":"$threshold"}""",
-                                        createdAt = createdAt
+                                        createdAt = createdAt,
+                                        status = "PENDING",
+                                        detectedAmount = diff.toLong(),
+                                        paymentThreshold = threshold.toLong()
                                     )
                                 )
                             }
                             append("refund task created (amount=$diff, threshold=$threshold)")
+                            Log.d(LogTags.TAG_REFUND, "saved refundTaskId=$refundTaskId")
                             Toast.makeText(
                                 this@DebugWalletActivity,
                                 "返金タスクを作成しました",

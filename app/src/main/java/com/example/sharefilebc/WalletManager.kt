@@ -28,8 +28,6 @@ class WalletManager private constructor(
 ) {
 
     companion object {
-        private const val TAG = "WalletManager"
-
         @Volatile
         private var INSTANCE: WalletManager? = null
 
@@ -78,7 +76,7 @@ class WalletManager private constructor(
 
         val w = HdWallet(config)
         wallet = w
-        Log.d(TAG, "HdWallet initialized. db=$dbPath")
+        Log.d(LogTags.TAG_WALLET, "HdWallet initialized. db=$dbPath")
         w
     }
 
@@ -90,14 +88,14 @@ class WalletManager private constructor(
      */
     suspend fun setupWallet() = withContext(Dispatchers.IO) {
         getOrCreateWallet()
-        Log.d(TAG, "setupWallet done")
+        Log.d(LogTags.TAG_WALLET, "setupWallet done")
     }
 
     /** ブロックチェーン同期 */
     suspend fun sync() = withContext(Dispatchers.IO) {
         val w = getOrCreateWallet()
         w.sync()
-        Log.d(TAG, "sync done")
+        Log.d(LogTags.TAG_WALLET, "sync done")
     }
 
     /** 新規 TPC 受取アドレス */
@@ -107,7 +105,7 @@ class WalletManager private constructor(
         // ✅ TPC は colorId = null
         val result = w.getNewAddress(WalletRuntimeConfig.TPC_COLOR_ID)
 
-        Log.d(TAG, "new address=${result.address}")
+        Log.d(LogTags.TAG_WALLET, "new address=${result.address}")
         result.address
     }
 
@@ -118,7 +116,7 @@ class WalletManager private constructor(
         // ✅ TPC は colorId = null
         val balance: ULong = w.balance(WalletRuntimeConfig.TPC_COLOR_ID)
 
-        Log.d(TAG, "balance=$balance")
+        Log.d(LogTags.TAG_WALLET, "balance=$balance")
         balance
     }
 
@@ -144,7 +142,7 @@ class WalletManager private constructor(
         )
 
         val txid = w.transfer(params, emptyList())
-        Log.d(TAG, "transfer txid=$txid")
+        Log.d(LogTags.TAG_WALLET, "transfer txid=$txid")
         txid
     }
 

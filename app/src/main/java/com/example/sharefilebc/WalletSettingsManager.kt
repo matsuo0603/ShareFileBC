@@ -15,7 +15,7 @@ class WalletSettingsManager private constructor(context: Context) {
         private const val KEY_PRESET = "network_preset"
         private const val KEY_TOKEN_TRANSFER_AMOUNT = "token_transfer_amount"
         private const val KEY_PAYMENT_THRESHOLD = "payment_threshold"
-
+        private const val KEY_LAST_KNOWN_BALANCE = "last_known_balance"
         private const val DEFAULT_PRESET = "PROD"
         private const val DEFAULT_NETWORK_ID = 1195501765u
         private const val DEFAULT_GENESIS_HASH =
@@ -23,6 +23,7 @@ class WalletSettingsManager private constructor(context: Context) {
         private const val DEFAULT_ESPLORA_URL = "https://index-lab.msc.trustlayer.jp"
         private const val DEFAULT_TOKEN_TRANSFER_AMOUNT = 1L
         private const val DEFAULT_PAYMENT_THRESHOLD = 1L
+        private const val DEFAULT_LAST_KNOWN_BALANCE = -1L
         @Volatile
         private var INSTANCE: WalletSettingsManager? = null
 
@@ -90,6 +91,18 @@ class WalletSettingsManager private constructor(context: Context) {
     fun setPaymentThreshold(amount: Long) {
         prefs.edit()
             .putLong(KEY_PAYMENT_THRESHOLD, amount)
+            .apply()
+    }
+
+    fun getLastKnownBalance(): ULong? {
+        val value = prefs.getLong(KEY_LAST_KNOWN_BALANCE, DEFAULT_LAST_KNOWN_BALANCE)
+        if (value < 0) return null
+        return value.toULong()
+    }
+
+    fun setLastKnownBalance(balance: ULong) {
+        prefs.edit()
+            .putLong(KEY_LAST_KNOWN_BALANCE, balance.toLong())
             .apply()
     }
 

@@ -17,7 +17,7 @@ import androidx.room.RoomDatabase
         RefundTaskEntity::class,
         BlockedSenderEntity::class,
     ],
-    version = 12
+    version = 13
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao

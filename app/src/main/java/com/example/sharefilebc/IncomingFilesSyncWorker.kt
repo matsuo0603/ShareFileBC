@@ -17,18 +17,14 @@ class IncomingFilesSyncWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        Log.d(TAG, "▶ Worker 実行開始")
+        Log.d(LogTags.TAG_SYNC_INCOMING, "worker start")
         return try {
             val count = IncomingFilesSyncer.syncOnce(applicationContext)
-            Log.d(TAG, "✅ syncOnce upsert 件数: $count")
+            Log.d(LogTags.TAG_SYNC_INCOMING, "worker done upsert=$count")
             Result.success()
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Worker 実行エラー", e)
+            Log.e(LogTags.TAG_SYNC_INCOMING, "worker error", e)
             Result.failure()
         }
-    }
-
-    companion object {
-        private const val TAG = "IncomingFilesSyncWorker"
     }
 }
