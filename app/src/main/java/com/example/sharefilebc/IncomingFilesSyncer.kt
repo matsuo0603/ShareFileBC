@@ -30,6 +30,8 @@ object IncomingFilesSyncer {
         val receivedDao = db.receivedFolderDao()
         val refundTaskDao = db.refundTaskDao()
         val blockedSenderDao = db.blockedSenderDao()
+        val sentShareDao = db.sentShareDao()
+        val sharePaymentDao = db.sharePaymentDao()
         val walletSettingsManager = WalletSettingsManager.getInstance(context)
         val walletManager = WalletManager.getInstance(context)
 
@@ -96,67 +98,73 @@ object IncomingFilesSyncer {
             }
         }
 
-        if (upsertedEntities.isNotEmpty()) {
-            processPaymentFlow(
-                walletManager,
-                walletSettingsManager,
-                refundTaskDao,
-                blockedSenderDao,
-                upsertedEntities
-            )
-        }
+        processIncomingPayments(
+            walletManager,
+            walletSettingsManager,
+            sentShareDao,
+            sharePaymentDao,
+            refundTaskDao,
+            blockedSenderDao
+        )
 
         Log.d(LogTags.TAG_SYNC_INCOMING, "end")
         upsertCount
     }
 
-    private suspend fun processPaymentFlow(
+    private suspend fun processIncomingPayments(
         walletManager: WalletManager,
         walletSettingsManager: WalletSettingsManager,
+        sentShareDao: com.example.sharefilebc.data.SentShareDao,
+        sharePaymentDao: com.example.sharefilebc.data.SharePaymentDao,
         refundTaskDao: com.example.sharefilebc.data.RefundTaskDao,
-        blockedSenderDao: com.example.sharefilebc.data.BlockedSenderDao,
-        targets: List<ReceivedFolderEntity>
+        blockedSenderDao: com.example.sharefilebc.data.BlockedSenderDao
     ) {
-        for (target in targets) {
+        val balanceBefore: ULong? = walletSettingsManager.getLastKnownBalance()
+        walletManager.sync()
+        val balanceAfter: ULong = walletManager.getBalance()
 
-            val isBlocked = blockedSenderDao.countByEmail(target.senderName) > 0
-            val threshold: ULong = walletSettingsManager.getPaymentThreshold()
+        val delta: ULong = when {
+            balanceBefore == null -> 0uL
+            balanceAfter > balanceBefore -> balanceAfter - balanceBefore
+            else -> 0uL
+        }
 
-            val decision = evaluateSharePayment(
-                totalAmount = threshold,
-                threshold = threshold,
-                isSenderBlocked = isBlocked
+        walletSettingsManager.setLastKnownBalance(balanceAfter)
+
+        if (delta == 0uL) return
+
+        val latestPending = sentShareDao.findLatestByStatus("PENDING") ?: return
+
+        val threshold = latestPending.threshold.toULong()
+        val status = if (delta >= threshold) "PAID" else "UNDERPAID"
+        sentShareDao.updateStatus(latestPending.id, status)
+
+        sharePaymentDao.insert(
+            com.example.sharefilebc.data.SharePaymentEntity(
+                fileId = latestPending.fileId,
+                folderId = latestPending.folderId,
+                txid = "balance-delta",
+                amount = delta.toLong(),
+                paidAt = nowIsoString(),
+                payerRefundAddress = null,
+                result = status
             )
+        )
 
-            if (decision is ShareVerificationDecision.Rejected) continue
-
-            val balanceBefore: ULong? = walletSettingsManager.getLastKnownBalance()
-            walletManager.sync()
-            val balanceAfter: ULong = walletManager.getBalance()
-
-            val delta: ULong = when {
-                balanceBefore == null -> 0uL
-                balanceAfter > balanceBefore -> balanceAfter - balanceBefore
-                else -> 0uL
-            }
-
-            walletSettingsManager.setLastKnownBalance(balanceAfter)
-
-            if (delta == 0uL) continue
-
-            if (delta >= threshold) {
-                val refundTask = com.example.sharefilebc.data.RefundTaskEntity(
-                    shareID = target.folderId,
-                    senderPublicKey = target.senderName,
-                    contextJSON = """{"delta":"$delta","threshold":"$threshold"}""",
-                    createdAt = nowIsoString(),
-                    status = "PENDING",
-                    detectedAmount = delta.toLong(),
-                    paymentThreshold = threshold.toLong(),
-                    relatedFolderId = target.folderId
-                )
-                refundTaskDao.insert(refundTask)
-            }
+        val isBlocked = blockedSenderDao.countByEmail(latestPending.recipientEmail) > 0
+        if (status == "UNDERPAID" || isBlocked) {
+            val refundTask = com.example.sharefilebc.data.RefundTaskEntity(
+                shareID = latestPending.folderId,
+                senderPublicKey = latestPending.recipientEmail,
+                contextJSON = """{"delta":"$delta","threshold":"$threshold","status":"$status"}""",
+                createdAt = nowIsoString(),
+                status = "PENDING",
+                detectedAmount = delta.toLong(),
+                paymentThreshold = threshold.toLong(),
+                relatedFolderId = latestPending.folderId,
+                relatedFileId = latestPending.fileId
+            )
+            refundTaskDao.insert(refundTask)
         }
     }
 

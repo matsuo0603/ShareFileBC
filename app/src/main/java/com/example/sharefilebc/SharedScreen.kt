@@ -53,6 +53,8 @@ fun SharedScreen(
     initialFileId: String? = null,
     deepLinkSenderPublicKey: String? = null,
     deepLinkRecipientEmail: String? = null,
+    deepLinkSenderAddress: String? = null,
+    deepLinkThreshold: ULong? = null,
 ) {
     // DeepLink でフォルダ or ファイル指定があれば「受信」タブから開始
     var selectedTab by remember(initialFolderId, initialFileId) {
@@ -116,6 +118,8 @@ fun SharedScreen(
                         initialFileId = initialFileId,
                         deepLinkSenderPublicKey = deepLinkSenderPublicKey,
                         deepLinkRecipientEmail = deepLinkRecipientEmail,
+                        deepLinkSenderAddress = deepLinkSenderAddress,
+                        deepLinkThreshold = deepLinkThreshold,
                     )
                 }
             }

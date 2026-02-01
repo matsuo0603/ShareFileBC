@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -16,8 +18,10 @@ import androidx.room.RoomDatabase
         ReceivedFileEntity::class,
         RefundTaskEntity::class,
         BlockedSenderEntity::class,
+        SentShareEntity::class,
+        SharePaymentEntity::class,
     ],
-    version = 13
+    version = 14
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
@@ -29,10 +33,44 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun receivedFileDao(): ReceivedFileDao
     abstract fun refundTaskDao(): RefundTaskDao
     abstract fun blockedSenderDao(): BlockedSenderDao
+    abstract fun sentShareDao(): SentShareDao
+    abstract fun sharePaymentDao(): SharePaymentDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sent_shares (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        fileId TEXT NOT NULL,
+                        folderId TEXT NOT NULL,
+                        recipientEmail TEXT NOT NULL,
+                        createdAt TEXT NOT NULL,
+                        threshold INTEGER NOT NULL,
+                        senderAddress TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'PENDING'
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS share_payments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        fileId TEXT NOT NULL,
+                        folderId TEXT NOT NULL,
+                        txid TEXT NOT NULL,
+                        amount INTEGER NOT NULL,
+                        paidAt TEXT NOT NULL,
+                        payerRefundAddress TEXT,
+                        result TEXT NOT NULL DEFAULT 'PAID'
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -40,7 +78,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "app_database"
-                ).fallbackToDestructiveMigration()
+                ).addMigrations(MIGRATION_13_14)
                     .build()
                     .also { INSTANCE = it }
             }

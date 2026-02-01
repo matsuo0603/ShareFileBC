@@ -38,7 +38,9 @@ class HomeActivity : ComponentActivity() {
         val folderId: String?,
         val fileId: String?,
         val senderPublicKey: String?,
-        val recipientEmail: String?
+        val recipientEmail: String?,
+        val senderAddress: String?,
+        val threshold: ULong?
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,7 +79,8 @@ class HomeActivity : ComponentActivity() {
         val fileIdFromExtra: String? = intent.getStringExtra("fileId")
         val senderKeyFromExtra: String? = intent.getStringExtra("senderPublicKey")
         val recipientEmailFromExtra: String? = intent.getStringExtra("recipientEmail")
-
+        val senderAddressFromExtra: String? = intent.getStringExtra("senderAddress")
+        val thresholdFromExtra: ULong? = intent.getStringExtra("threshold")?.toULongOrNull()
         // 新形式: https://sharefilebcapp.web.app/folder/<ID>
         val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
             if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
@@ -92,6 +95,8 @@ class HomeActivity : ComponentActivity() {
         val fileIdFromLink: String? = fileIdFromExtra ?: deepLinkParams.fileId
         val senderKeyFromLink: String? = senderKeyFromExtra ?: deepLinkParams.senderPublicKey
         val recipientEmailFromLink: String? = recipientEmailFromExtra ?: deepLinkParams.recipientEmail
+        val senderAddressFromLink: String? = senderAddressFromExtra ?: deepLinkParams.senderAddress
+        val thresholdFromLink: ULong? = thresholdFromExtra ?: deepLinkParams.threshold
         val displayNameFromIntent = intent.getStringExtra("displayName") ?: "ゲスト"
 
         Log.d(TAG, "🟩 onCreate - Intent data: $deepLinkUri")
@@ -100,6 +105,7 @@ class HomeActivity : ComponentActivity() {
             "🟩 onCreate - folderId(extra=$folderIdFromExtra, path=$folderIdFromPath, query=$folderIdFromQuery) -> PICKED: $folderIdFromLink"
         )
         Log.d(TAG, "🟩 onCreate - fileId=$fileIdFromLink, senderKey=${senderKeyFromLink?.take(6)}...")
+        Log.d(TAG, "🟩 onCreate - senderAddress=${senderAddressFromLink?.take(6)} threshold=$thresholdFromLink")
         Log.d(TAG, "🟩 onCreate - DisplayName: $displayNameFromIntent")
 
         // 目視確認用（端末上に出す）
@@ -169,6 +175,8 @@ class HomeActivity : ComponentActivity() {
                     fileIdFromLink?.let { putExtra("fileId", it) }
                     senderKeyFromLink?.let { putExtra("senderPublicKey", it) }
                     recipientEmailFromLink?.let { putExtra("recipientEmail", it) }
+                    senderAddressFromLink?.let { putExtra("senderAddress", it) }
+                    thresholdFromLink?.let { putExtra("threshold", it.toString()) }
                 }
             )
             finish()
@@ -246,7 +254,9 @@ class HomeActivity : ComponentActivity() {
                                 initialFolderId = if (isFromDeepLink) folderIdFromLink else null,
                                 initialFileId = fileIdFromLink,
                                 deepLinkSenderPublicKey = senderKeyFromLink,
-                                deepLinkRecipientEmail = recipientEmailFromLink
+                                deepLinkRecipientEmail = recipientEmailFromLink,
+                                deepLinkSenderAddress = senderAddressFromLink,
+                                deepLinkThreshold = thresholdFromLink
                             )
                         }
                     }
@@ -262,7 +272,7 @@ class HomeActivity : ComponentActivity() {
     }
 
     private fun parseDeepLink(uri: Uri?): DeepLinkParams {
-        if (uri == null) return DeepLinkParams(null, null, null, null)
+        if (uri == null) return DeepLinkParams(null, null, null, null, null, null)
 
         val segments = uri.pathSegments.orEmpty()
         val isSharePath = segments.firstOrNull() == "share"
@@ -277,12 +287,16 @@ class HomeActivity : ComponentActivity() {
         val sender = uri.getQueryParameter("sender")
         val to = uri.getQueryParameter("to")
         val fileIdFromQuery = uri.getQueryParameter("fileId")
+        val senderAddress = uri.getQueryParameter("senderAddress")
+        val threshold = uri.getQueryParameter("threshold")?.toULongOrNull()
 
         return DeepLinkParams(
             folderId = uri.getQueryParameter("folderId"),
             fileId = fileIdFromQuery ?: fileIdFromPath,
             senderPublicKey = sender,
-            recipientEmail = to
+            recipientEmail = to,
+            senderAddress = senderAddress,
+            threshold = threshold
         )
     }
 

@@ -78,7 +78,9 @@ object EmailSender {
         fileName: String,
         folderId: String,
         fileId: String? = null,
-        senderPublicKeyHex: String? = null
+        senderPublicKeyHex: String? = null,
+        threshold: ULong? = null,
+        senderAddress: String? = null
     ) {
         val subject = "ファイル共有: $fileName"
 
@@ -93,6 +95,13 @@ object EmailSender {
                     append("sender=").append(Uri.encode(senderPublicKeyHex))
                     append("&to=").append(Uri.encode(recipientEmail))
                     append("&fileId=").append(Uri.encode(fileId))
+                    append("&folderId=").append(Uri.encode(folderId))
+                    threshold?.let {
+                        append("&threshold=").append(Uri.encode(it.toString()))
+                    }
+                    senderAddress?.let {
+                        append("&senderAddress=").append(Uri.encode(it))
+                    }
                 }
 
                 appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")

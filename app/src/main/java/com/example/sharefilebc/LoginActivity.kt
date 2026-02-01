@@ -46,6 +46,11 @@ class LoginActivity : ComponentActivity() {
     // Deep Link と folderId を保持（HomeActivityから渡される）
     private var deepLinkUriFromHomeActivity: android.net.Uri? = null
     private var folderIdFromHomeActivity: String? = null
+    private var fileIdFromHomeActivity: String? = null
+    private var senderPublicKeyFromHomeActivity: String? = null
+    private var recipientEmailFromHomeActivity: String? = null
+    private var senderAddressFromHomeActivity: String? = null
+    private var thresholdFromHomeActivity: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,6 +69,11 @@ class LoginActivity : ComponentActivity() {
         // HomeActivityから渡された Deep Link / folderId を取得
         deepLinkUriFromHomeActivity = intent?.data
         folderIdFromHomeActivity = intent.getStringExtra("folderId")
+        fileIdFromHomeActivity = intent.getStringExtra("fileId")
+        senderPublicKeyFromHomeActivity = intent.getStringExtra("senderPublicKey")
+        recipientEmailFromHomeActivity = intent.getStringExtra("recipientEmail")
+        senderAddressFromHomeActivity = intent.getStringExtra("senderAddress")
+        thresholdFromHomeActivity = intent.getStringExtra("threshold")
         Log.d(TAG, "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
         Log.d(TAG, "onCreate: folderId received: $folderIdFromHomeActivity")
 
@@ -149,6 +159,11 @@ class LoginActivity : ComponentActivity() {
                 // deep link に、folderId は extra に戻す（両経路で再現耐性UP）
                 deepLinkUriFromHomeActivity?.let { data = it }
                 folderIdFromHomeActivity?.let { putExtra("folderId", it) }
+                fileIdFromHomeActivity?.let { putExtra("fileId", it) }
+                senderPublicKeyFromHomeActivity?.let { putExtra("senderPublicKey", it) }
+                recipientEmailFromHomeActivity?.let { putExtra("recipientEmail", it) }
+                senderAddressFromHomeActivity?.let { putExtra("senderAddress", it) }
+                thresholdFromHomeActivity?.let { putExtra("threshold", it) }
             }
             startActivity(intent)
             finish()

@@ -95,6 +95,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import com.example.sharefilebc.data.SentShareEntity
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -112,6 +113,7 @@ fun HomeScreen(
     val userDao = db.userDao()
     val emailKeyDao = db.emailKeyDao()
     val myPublicKeyDao = db.myPublicKeyDao()
+    val sentShareDao = db.sentShareDao()
 
     val driveUploader = remember { DriveUploader(context) }
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
@@ -196,14 +198,48 @@ fun HomeScreen(
                                 }.getOrNull()
 
                                 if (senderPublicKey != null) {
-                                    EmailSender.sendEmailWithDriveLink(
-                                        context = context,
-                                        recipientEmail = target.email,
-                                        fileName = fileName,
-                                        folderId = folderId,
-                                        fileId = fileId,
-                                        senderPublicKeyHex = senderPublicKey
-                                    )
+                                    val walletManager = WalletManager.getInstance(context)
+                                    val walletSettingsManager = WalletSettingsManager.getInstance(context)
+
+                                    scope.launch {
+                                        val (senderAddress, threshold) = withContext(Dispatchers.IO) {
+                                            val address = runCatching { walletManager.getNewAddress() }.getOrNull()
+                                            val thresholdValue = walletSettingsManager.getPaymentThreshold()
+                                            if (address != null) {
+                                                sentShareDao.insert(
+                                                    SentShareEntity(
+                                                        fileId = fileId,
+                                                        folderId = folderId,
+                                                        recipientEmail = target.email,
+                                                        createdAt = nowIsoString(),
+                                                        threshold = thresholdValue.toLong(),
+                                                        senderAddress = address,
+                                                        status = "PENDING"
+                                                    )
+                                                )
+                                            }
+                                            address to thresholdValue
+                                        }
+
+                                        if (senderAddress != null) {
+                                            EmailSender.sendEmailWithDriveLink(
+                                                context = context,
+                                                recipientEmail = target.email,
+                                                fileName = fileName,
+                                                folderId = folderId,
+                                                fileId = fileId,
+                                                senderPublicKeyHex = senderPublicKey,
+                                                threshold = threshold,
+                                                senderAddress = senderAddress
+                                            )
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "送信者の受取アドレスを取得できませんでした",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
                                 } else {
                                     Toast.makeText(
                                         context,
@@ -930,4 +966,9 @@ private suspend fun resolveMyKeys(
     }
 
     return trustLayer to derived
+}
+private fun nowIsoString(): String {
+    val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.getDefault())
+    formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+    return formatter.format(Date())
 }

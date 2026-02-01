@@ -34,6 +34,7 @@ class DebugWalletActivity : AppCompatActivity() {
         val database = AppDatabase.getDatabase(applicationContext)
         val refundTaskDao = database.refundTaskDao()
         val blockedSenderDao = database.blockedSenderDao()
+        val sharePaymentDao = database.sharePaymentDao()
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -180,6 +181,33 @@ class DebugWalletActivity : AppCompatActivity() {
                 }
 
                 lastBalance = current
+            }
+        }
+        // ✅ 手動返金（UNDERPAID の SharePayment を返金）
+        addButton("手動返金") {
+            lifecycleScope.launch {
+                val payment = withContext(Dispatchers.IO) {
+                    sharePaymentDao.findLatestByResult("UNDERPAID")
+                }
+                if (payment == null) {
+                    append("返金対象がありません")
+                    return@launch
+                }
+                val refundAddress = payment.payerRefundAddress?.trim().orEmpty()
+                if (refundAddress.isBlank()) {
+                    append("返金先アドレスが未登録です")
+                    return@launch
+                }
+                val amount = payment.amount.toULong()
+                val result = runCatching { walletManager.transfer(refundAddress, amount) }
+                if (result.isSuccess) {
+                    append("refund txid=${result.getOrNull()}")
+                    withContext(Dispatchers.IO) {
+                        sharePaymentDao.updateResult(payment.id, "REFUNDED")
+                    }
+                } else {
+                    append("refund failed: ${result.exceptionOrNull()?.message}")
+                }
             }
         }
 

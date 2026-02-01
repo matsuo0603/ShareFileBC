@@ -1,6 +1,7 @@
 package com.example.sharefilebc
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
+import com.example.sharefilebc.data.SharePaymentEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import kotlinx.coroutines.launch
@@ -70,12 +72,22 @@ private data class ReceivedSenderDetailUi(
     val cacheToken: String
 )
 
+private data class PaymentInfoUi(
+    val threshold: ULong,
+    val senderAddress: String,
+    val statusLabel: String,
+    val isPaid: Boolean,
+    val isUnderpaid: Boolean
+)
+
 @Composable
 fun DownloadScreen(
     initialFolderId: String?,
     initialFileId: String?,
     deepLinkSenderPublicKey: String?,
     deepLinkRecipientEmail: String?,
+    deepLinkSenderAddress: String?,
+    deepLinkThreshold: ULong?,
 ) {
     val context = LocalContext.current
     val downloader = remember { DriveDownloader(context) }
@@ -84,6 +96,7 @@ fun DownloadScreen(
     val db = remember { AppDatabase.getDatabase(context) }
     val receivedDao = remember { db.receivedFolderDao() }
     val userDao = remember { db.userDao() }
+    val sharePaymentDao = remember { db.sharePaymentDao() }
 
     val receivedFolders by receivedDao.getAll().collectAsState(initial = emptyList())
     val users by userDao.getAll().collectAsState(initial = emptyList())
@@ -94,6 +107,33 @@ fun DownloadScreen(
     var detailState by remember { mutableStateOf<ReceivedSenderDetailUi?>(null) }
     val detailCache = remember { mutableStateMapOf<String, ReceivedSenderDetailUi>() }
     var pendingAutoDownloadFileId by remember { mutableStateOf(initialFileId) }
+    var isPaying by remember { mutableStateOf(false) }
+
+    val walletManager = remember { WalletManager.getInstance(context) }
+    val walletSettingsManager = remember { WalletSettingsManager.getInstance(context) }
+
+    val requiresPayment = deepLinkSenderAddress != null && deepLinkThreshold != null
+
+    val paymentRecordFlow = remember(initialFileId, initialFolderId) {
+        if (initialFileId != null && initialFolderId != null) {
+            sharePaymentDao.observeLatest(initialFileId, initialFolderId)
+        } else {
+            null
+        }
+    }
+    val paymentRecord by (paymentRecordFlow?.collectAsState(initial = null)
+        ?: remember { mutableStateOf<SharePaymentEntity?>(null) })
+
+    val paymentStatusLabel = when (paymentRecord?.result) {
+        "PAID" -> "支払い済み"
+        "UNDERPAID" -> "不足"
+        "REFUNDED" -> "返金済み"
+        "FAILED" -> "失敗"
+        else -> "未払い"
+    }
+    val isPaid = paymentRecord?.result == "PAID"
+    val isUnderpaid = paymentRecord?.result == "UNDERPAID"
+    val canDownload = !requiresPayment || isPaid
 
     val senderGroups = remember(receivedFolders, users) {
         buildSenderSummaries(receivedFolders, users)
@@ -217,8 +257,9 @@ fun DownloadScreen(
         detailState = detail
         detailCache[sender] = detail
     }
-    LaunchedEffect(detailState, pendingAutoDownloadFileId) {
+    LaunchedEffect(detailState, pendingAutoDownloadFileId, canDownload) {
         val targetFileId = pendingAutoDownloadFileId ?: return@LaunchedEffect
+        if (!canDownload) return@LaunchedEffect
         val detail = detailState ?: return@LaunchedEffect
         val exists = detail.dateGroups.any { group -> group.files.any { it.id == targetFileId } }
         if (exists) {
@@ -227,6 +268,73 @@ fun DownloadScreen(
             isLoading = false
             pendingAutoDownloadFileId = null
         }
+    }
+
+    val paymentInfo = if (requiresPayment && deepLinkThreshold != null && deepLinkSenderAddress != null) {
+        PaymentInfoUi(
+            threshold = deepLinkThreshold,
+            senderAddress = deepLinkSenderAddress,
+            statusLabel = paymentStatusLabel,
+            isPaid = isPaid,
+            isUnderpaid = isUnderpaid
+        )
+    } else {
+        null
+    }
+
+    val onPayAndDownload: (() -> Unit)? = if (paymentInfo != null) {
+        val action: () -> Unit = action@{
+            if (isPaying) return@action
+            val fileId = initialFileId
+            val folderId = initialFolderId
+            if (fileId == null || folderId == null) {
+                Toast.makeText(context, "共有情報が不足しています", Toast.LENGTH_LONG).show()
+                return@action
+            }
+            val senderAddress = paymentInfo.senderAddress
+            val threshold = paymentInfo.threshold
+            coroutineScope.launch {
+                isPaying = true
+                val paymentResult = runCatching {
+                    walletManager.sync()
+                    val payerRefundAddress = walletManager.getNewAddress()
+                    val paidAmount = threshold
+                    val txid = walletManager.transfer(senderAddress, paidAmount)
+                    walletManager.sync()
+                    val balance = walletManager.getBalance()
+                    walletSettingsManager.setLastKnownBalance(balance)
+
+                    val result = if (paidAmount >= threshold) "PAID" else "UNDERPAID"
+                    sharePaymentDao.insert(
+                        SharePaymentEntity(
+                            fileId = fileId,
+                            folderId = folderId,
+                            txid = txid,
+                            amount = paidAmount.toLong(),
+                            paidAt = nowIsoString(),
+                            payerRefundAddress = payerRefundAddress,
+                            result = result
+                        )
+                    )
+
+                    if (fileId.isNotBlank() && result == "PAID") {
+                        downloader.downloadFile(fileId)
+                    }
+                }
+
+                if (paymentResult.isFailure) {
+                    Toast.makeText(
+                        context,
+                        "支払いに失敗しました: ${paymentResult.exceptionOrNull()?.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                isPaying = false
+            }
+        }
+        action
+    } else {
+        null
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -263,7 +371,19 @@ fun DownloadScreen(
                         modifier = Modifier.weight(1f),
                         detail = detailState!!,
                         onBack = { selectedSender = null },
+                        paymentInfo = paymentInfo,
+                        isPaying = isPaying,
+                        canDownload = canDownload,
+                        onPayAndDownload = onPayAndDownload,
                         onDownload = { fileId ->
+                            if (!canDownload) {
+                                Toast.makeText(
+                                    context,
+                                    "支払いが完了していません",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                return@ReceivedSenderDetail
+                            }
                             coroutineScope.launch {
                                 isLoading = true
                                 downloader.downloadFile(fileId)
@@ -496,6 +616,10 @@ private fun ReceivedSenderDetail(
     modifier: Modifier,
     detail: ReceivedSenderDetailUi,
     onBack: () -> Unit,
+    paymentInfo: PaymentInfoUi?,
+    isPaying: Boolean,
+    canDownload: Boolean,
+    onPayAndDownload: (() -> Unit)?,
     onDownload: (String) -> Unit
 ) {
     Column(
@@ -541,6 +665,14 @@ private fun ReceivedSenderDetail(
             }
         }
 
+        if (paymentInfo != null) {
+            PaymentInfoCard(
+                info = paymentInfo,
+                isPaying = isPaying,
+                onPayAndDownload = onPayAndDownload
+            )
+        }
+
         if (detail.dateGroups.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
@@ -570,6 +702,7 @@ private fun ReceivedSenderDetail(
                 items(group.files, key = { it.id }) { file ->
                     ReceivedFileItem(
                         file = file,
+                        downloadEnabled = canDownload,
                         onDownload = onDownload
                     )
                 }
@@ -581,6 +714,7 @@ private fun ReceivedSenderDetail(
 @Composable
 private fun ReceivedFileItem(
     file: ReceivedFileItemUi,
+    downloadEnabled: Boolean,
     onDownload: (String) -> Unit
 ) {
     Row(
@@ -610,12 +744,90 @@ private fun ReceivedFileItem(
                 )
             }
         }
-        IconButton(onClick = { onDownload(file.id) }) {
+        IconButton(
+            onClick = { onDownload(file.id) },
+            enabled = downloadEnabled
+        ) {
             Icon(
                 imageVector = Icons.Outlined.Download,
                 contentDescription = "ダウンロード",
-                tint = MaterialTheme.colorScheme.primary
+                tint = if (downloadEnabled) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
             )
         }
     }
+}
+
+@Composable
+private fun PaymentInfoCard(
+    info: PaymentInfoUi,
+    isPaying: Boolean,
+    onPayAndDownload: (() -> Unit)?
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SharedScreenColors.UserCardBackground),
+        border = BorderStroke(1.dp, SharedScreenColors.UserCardBorder),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "支払い情報",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "しきい値: ${info.threshold} TPC",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "送金先: ${info.senderAddress}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "支払い状態: ${info.statusLabel}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (info.isPaid) {
+                    MaterialTheme.colorScheme.primary
+                } else if (info.isUnderpaid) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            if (info.isUnderpaid) {
+                Text(
+                    text = "不足のためダウンロードできません。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            } else if (!info.isPaid) {
+                Text(
+                    text = "未払いのためダウンロードできません。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Button(
+                onClick = { onPayAndDownload?.invoke() },
+                enabled = !info.isPaid && !isPaying && onPayAndDownload != null
+            ) {
+                Text(text = if (isPaying) "支払い中..." else "支払ってダウンロード")
+            }
+        }
+    }
+}
+
+private fun nowIsoString(): String {
+    val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.getDefault())
+    formatter.timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+    return formatter.format(java.util.Date())
 }
