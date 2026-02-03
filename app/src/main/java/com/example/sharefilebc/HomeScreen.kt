@@ -108,9 +108,31 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val walletSettingsManager = remember { WalletSettingsManager.getInstance(context) }
 
+    // Stateとして保持するDBインスタンス（nullの間は未初期化）
+    var dbState: AppDatabase? by remember { mutableStateOf(null) }
 
-    val db = remember { AppDatabase.getDatabase(context) }
+    LaunchedEffect(Unit) {
+        if (dbState == null) {
+            dbState = withContext(Dispatchers.IO) {
+                AppDatabase.getDatabase(context)
+            }
+        }
+    }
+
+    if (dbState == null) {
+        Box(
+            modifier = modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+// 以降は non-null を保証
+    val db = dbState!!
     val userDao = db.userDao()
+
     val emailKeyDao = db.emailKeyDao()
     val myPublicKeyDao = db.myPublicKeyDao()
     val sentShareDao = db.sentShareDao()
@@ -193,49 +215,136 @@ fun HomeScreen(
                             is UploadResult.Success -> {
                                 val (fileName, fileId, folderId) = result
                                 val wallet = KeyDerivation.getInstance(context)
-                                val senderPublicKey = runCatching {
-                                    wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
-                                }.getOrNull()
+                                val myKeyEntity = withContext(Dispatchers.IO) {
+                                    db.myPublicKeyDao().getPrimary()
+                                }
 
-                                if (senderPublicKey != null) {
+                                val senderTrustLayerPublicKey = myKeyEntity?.trustLayerPublicKey
+                                val senderDerivedPublicKey = myKeyEntity?.derivedPublicKey
+
+                                if (senderTrustLayerPublicKey != null) {
                                     val walletManager = WalletManager.getInstance(context)
                                     val walletSettingsManager = WalletSettingsManager.getInstance(context)
 
                                     scope.launch {
-                                        val (senderAddress, threshold) = withContext(Dispatchers.IO) {
-                                            val address = runCatching { walletManager.getNewAddress() }.getOrNull()
-                                            val thresholdValue = walletSettingsManager.getPaymentThreshold()
-                                            if (address != null) {
-                                                sentShareDao.insert(
-                                                    SentShareEntity(
-                                                        fileId = fileId,
-                                                        folderId = folderId,
-                                                        recipientEmail = target.email,
-                                                        createdAt = nowIsoString(),
-                                                        threshold = thresholdValue.toLong(),
-                                                        senderAddress = address,
-                                                        status = "PENDING"
-                                                    )
-                                                )
-                                            }
-                                            address to thresholdValue
+                                        // 🔹 Step 1: 共有識別子（UUID）を生成
+                                        val uuid = java.util.UUID.randomUUID().toString()
+
+                                        // 🔹 Step 2: 送金量と閾値を取得
+                                        val transferAmount = walletSettingsManager.getTokenTransferAmount()
+                                        val threshold = walletSettingsManager.getPaymentThreshold()
+
+                                        // 🔹 Step 3: 返金用アドレスを生成（ColorID指定）
+                                        val refundAddress = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                walletManager.getNewAddressWithPublicKey(
+                                                    colorId = Constants.Strings.tokenColorId
+                                                ).first  // Pair<address, publicKey> の address部分を取得
+                                            }.getOrNull()
                                         }
 
-                                        if (senderAddress != null) {
-                                            EmailSender.sendEmailWithDriveLink(
-                                                context = context,
-                                                recipientEmail = target.email,
-                                                fileName = fileName,
-                                                folderId = folderId,
-                                                fileId = fileId,
-                                                senderPublicKeyHex = senderPublicKey,
-                                                threshold = threshold,
-                                                senderAddress = senderAddress
+                                        if (refundAddress == null) {
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "返金用アドレスの生成に失敗しました",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                            return@launch
+                                        }
+
+                                        // 🔹 Step 4: P2Cアドレスを生成（受信者の公開鍵 + UUID）
+                                        val p2cAddress = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                walletManager.generateP2CAddress(
+                                                    publicKey = recipientKey.trustLayerPublicKey,
+                                                    contract = uuid,
+                                                    colorId = Constants.Strings.tokenColorId
+                                                )
+                                            }.getOrNull()
+                                        }
+
+                                        if (p2cAddress == null) {
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "P2Cアドレスの生成に失敗しました",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                            return@launch
+                                        }
+
+                                        // 🔹 Step 5: トークン送金を実行
+                                        val txid = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                walletManager.transferToken(
+                                                    toAddress = p2cAddress,
+                                                    amount = transferAmount,
+                                                    colorId = Constants.Strings.tokenColorId
+                                                )
+                                            }.onFailure { error ->
+                                                Log.e("HomeScreen", "❌ Token transfer failed", error)
+                                            }.getOrNull()
+                                        }
+
+                                        if (txid == null) {
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "トークン送金に失敗しました",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                            return@launch
+                                        }
+
+                                        Log.d("HomeScreen", "✅ Token transfer success: txid=$txid")
+
+                                        // 🔹 Step 6: ウォレット同期
+                                        withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                walletManager.sync()
+                                            }.onFailure { error ->
+                                                Log.w("HomeScreen", "⚠️ Wallet sync failed", error)
+                                            }
+                                        }
+
+                                        // 🔹 Step 7: SentShareEntity に記録
+                                        withContext(Dispatchers.IO) {
+                                            sentShareDao.insert(
+                                                SentShareEntity(
+                                                    fileId = fileId,
+                                                    folderId = folderId,
+                                                    recipientEmail = target.email,
+                                                    createdAt = nowIsoString(),
+                                                    threshold = threshold.toLong(),
+                                                    senderAddress = refundAddress,
+                                                    status = "PAID"  // 送金完了
+                                                )
                                             )
-                                        } else {
+                                        }
+
+                                        // 🔹 Step 8: メール送信（UUID, TXID, 返金アドレスを含む）
+                                        EmailSender.sendEmailWithDriveLink(
+                                            context = context,
+                                            recipientEmail = target.email,
+                                            fileName = fileName,
+                                            folderId = folderId,
+                                            fileId = fileId,
+                                            senderPublicKeyHex = senderDerivedPublicKey,
+                                            threshold = threshold,
+                                            senderAddress = refundAddress,
+                                            uuid = uuid,
+                                            txid = txid
+                                        )
+
+                                        // 🔹 Step 9: 成功メッセージ
+                                        withContext(Dispatchers.Main) {
                                             Toast.makeText(
                                                 context,
-                                                "送信者の受取アドレスを取得できませんでした",
+                                                "ファイル共有とトークン送金が完了しました",
                                                 Toast.LENGTH_LONG
                                             ).show()
                                         }
@@ -306,15 +415,14 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         val manager = WalletManager.getInstance(context)
 
-        // ✅ suspend 関数は runCatching のラムダ内で呼べないため try/catch で扱う
         walletAddress = try {
+            manager.initializeIfNeeded()
             manager.getNewAddress()
         } catch (e: Exception) {
             Log.e("HomeScreen", "getNewAddress failed", e)
             null
         }
     }
-
 
     LaunchedEffect(registrationSnackbarMessage) {
         registrationSnackbarMessage?.let {
@@ -332,9 +440,8 @@ fun HomeScreen(
                 onClick = { showAddDialog = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = CircleShape
             ) {
-                Icon(Icons.Outlined.PersonAdd, contentDescription = "共有相手を追加")
+                Icon(Icons.Outlined.PersonAdd, contentDescription = "Add")
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
@@ -361,14 +468,20 @@ fun HomeScreen(
                             Log.d("BalanceDebug", "WalletManager class = ${manager::class.qualifiedName}")
 
                             runCatching {
-                                Log.d("BalanceDebug", "sync start")
-                                manager.sync()
-                                Log.d("BalanceDebug", "sync end")
+                                withContext(Dispatchers.IO) {
+                                    Log.d("BalanceDebug", "initializeIfNeeded start")
+                                    manager.initializeIfNeeded()
+                                    Log.d("BalanceDebug", "initializeIfNeeded end")
 
-                                Log.d("BalanceDebug", "getBalance start")
-                                val bal = manager.getBalance()
-                                Log.d("BalanceDebug", "getBalance end: $bal")
-                                bal
+                                    Log.d("BalanceDebug", "sync start")
+                                    manager.sync()
+                                    Log.d("BalanceDebug", "sync end")
+
+                                    Log.d("BalanceDebug", "getBalance start")
+                                    val bal = manager.getBalance()
+                                    Log.d("BalanceDebug", "getBalance end: $bal")
+                                    bal
+                                }
                             }.onSuccess { balance ->
                                 balanceSat = balance
                                 isBalanceVisible = !isBalanceVisible
@@ -379,6 +492,7 @@ fun HomeScreen(
                         }
                     }
                 )
+
 
                 // クリック領域も丸くする
                 Box(

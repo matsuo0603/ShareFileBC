@@ -12,4 +12,18 @@ interface RefundTaskDao {
 
     @Query("SELECT * FROM refund_tasks")
     suspend fun getAll(): List<RefundTaskEntity>
+
+    /**
+     * ShareProcessor.refundShare で使用
+     * shareIDで返金タスクを検索
+     */
+    @Query("SELECT * FROM refund_tasks WHERE shareID = :shareId LIMIT 1")
+    suspend fun findByShareId(shareId: String): RefundTaskEntity?
+
+    /**
+     * ShareProcessor.refundShare / declineRefund で使用
+     * 返金完了後にタスクを削除
+     */
+    @Query("DELETE FROM refund_tasks WHERE shareID = :shareId")
+    suspend fun deleteByShareId(shareId: String)
 }

@@ -46,35 +46,37 @@ class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // ✅ WalletManager の初期化を最優先で実行（ただし UI はブロックしない）
+        // HomeActivity 起動直後に別コルーチンから wallet を触ると "Wallet not initialized" で落ちることがあるため
+        // WalletManager 側の initializeIfNeeded() で多重初期化と競合を防ぐ。
         lifecycleScope.launch {
-            WalletManager.getInstance(this@HomeActivity).setupWallet()
+            runCatching {
+                val walletManager = WalletManager.getInstance(this@HomeActivity)
+                walletManager.initializeIfNeeded()
+                Log.d(TAG, "✅ WalletManager initialized successfully")
+
+                // 🔐 初期化完了後にアドレス・公開鍵を取得（ログ確認用）
+                val currentAddress = walletManager.getNewAddress()
+                Log.d(TAG, "Tapyrus current address = $currentAddress")
+
+                val (address, pubKey) = walletManager.getNewAddressWithPublicKey()
+                Log.d(TAG, "Tapyrus public key = $pubKey")
+                Log.d(TAG, "Tapyrus address = $address")
+            }.onFailure { e ->
+                Log.e(TAG, "❌ WalletManager initialization failed", e)
+                Toast.makeText(
+                    this@HomeActivity,
+                    "ウォレットの初期化に失敗しました",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
-
-        // 🔐 Tapyrus ウォレットの受取アドレス取得（鍵生成〜派生は TapyrusWalletManager に集約）
-        try {
-            val walletManager = KeyDerivation.getInstance(applicationContext)
-            val currentAddress = walletManager.getCurrentAddress()
-            Log.d(
-                TAG,
-                "Tapyrus current address (m/44'/0'/0'/0/0) = $currentAddress"
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Tapyrus wallet initialization error", e)
-        }
-
-        // 🔍 テスト用ログ：公開鍵 / 秘密鍵の確認（秘密鍵はマスクする）
-        val walletManager = KeyDerivation.getInstance(applicationContext)
-        val pubHex = walletManager.getCurrentPublicKeyHex()
-        Log.d(TAG, "Tapyrus public key HEX = $pubHex")
-
-        val privHex = walletManager.getCurrentPrivateKeyHex()
-        Log.d(TAG, "Tapyrus private key HEX = ${maskHex(privHex)}")
 
         val deepLinkUri: Uri? = intent?.data
         val deepLinkParams = parseDeepLink(deepLinkUri)
         val pubKeyLink = PublicKeyLinkBuilder.parse(deepLinkUri)
 
-        // HomeActivity に戻ってくる際に folderId/fileId を extra で受ける（OS差/端末差で data欠落の対策）
+        // HomeActivity に戻ってくる際に folderId/fileId を extra で受ける（OS差/端末差でdata欠落の対策）
         val folderIdFromExtra: String? = intent.getStringExtra("folderId")
         val fileIdFromExtra: String? = intent.getStringExtra("fileId")
         val senderKeyFromExtra: String? = intent.getStringExtra("senderPublicKey")
@@ -184,11 +186,12 @@ class HomeActivity : ComponentActivity() {
         }
 
         // ✅ ここから先は「サインイン済み & DriveスコープOK」
-        // --- 初期トークン配布申請（Swift版 requestInitialTokensIfNeeded 相当） ---
+        // --- 初期トークン配布申請（Swiftバージョン requestInitialTokensIfNeeded 相当） ---
         account.email?.let { email ->
             lifecycleScope.launch {
                 runCatching {
                     val wm = WalletManager.getInstance(applicationContext)
+                    wm.initializeIfNeeded()
 
                     // サーバへ渡す受取アドレス（TPCのP2PKH）
                     val address = wm.getNewAddress()
@@ -214,15 +217,21 @@ class HomeActivity : ComponentActivity() {
 
         account.email?.let { email ->
             lifecycleScope.launch {
-                val publicKeyHex = walletManager.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
-                val api = PublicKeyApiClient()
-                val result = withContext(Dispatchers.IO) {
-                    api.registerMyPublicKey(email, publicKeyHex)
-                }
-                result.onSuccess {
-                    Log.d(TAG, "🟢 公開鍵を公開鍵レジストリに登録しました (${email})")
+                runCatching {
+                    val wm = WalletManager.getInstance(applicationContext)
+                    wm.initializeIfNeeded()
+                    val (_, publicKeyHex) = wm.getNewAddressWithPublicKey()
+                    val api = PublicKeyApiClient()
+                    val result = withContext(Dispatchers.IO) {
+                        api.registerMyPublicKey(email, publicKeyHex)
+                    }
+                    result.onSuccess {
+                        Log.d(TAG, "🟢 公開鍵を公開鍵レジストリに登録しました (${email})")
+                    }.onFailure { e ->
+                        Log.e(TAG, "🟠 公開鍵の自動登録に失敗しました", e)
+                    }
                 }.onFailure { e ->
-                    Log.e(TAG, "🟠 公開鍵の自動登録に失敗しました", e)
+                    Log.e(TAG, "🟠 公開鍵登録処理でエラー", e)
                 }
             }
         }
@@ -299,7 +308,4 @@ class HomeActivity : ComponentActivity() {
             threshold = threshold
         )
     }
-
-    private fun maskHex(hex: String, keep: Int = 6): String =
-        if (hex.length <= keep) hex else hex.take(keep) + "..."
 }

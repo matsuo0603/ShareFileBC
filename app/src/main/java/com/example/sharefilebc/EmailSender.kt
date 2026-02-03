@@ -30,8 +30,7 @@ import java.util.TimeZone
  * Gmail API（gmail.send）を使ってメールを自動送信するためのユーティリティ。
  *
  * - sendAuto(...) は互換用の簡易 API
- * - sendEmailWithDriveLink(...) は fileId / senderPublicKeyHex を含む「新仕様」のリンクを送る
- *   ただしどちらも引数はオプションにして、既存の呼び出しが壊れないようにする。
+ * - sendEmailWithDriveLink(...) は uuid / txid を含む「新仕様」のリンクを送る
  */
 object EmailSender {
 
@@ -58,7 +57,7 @@ object EmailSender {
             recipientEmail = recipientEmail,
             fileName = fileName,
             folderId = folderId
-            // fileId / senderPublicKeyHex は null のまま（旧仕様フォールバック）
+            // fileId / senderPublicKeyHex / uuid / txid は null のまま（旧仕様フォールバック）
         )
     }
 
@@ -67,10 +66,12 @@ object EmailSender {
      *
      * @param fileId             DeepLink 用のファイルID（無ければ null）
      * @param senderPublicKeyHex 公開鍵自動共有のための送信者公開鍵（無ければ null）
+     * @param threshold          送金閾値（無ければ null）
+     * @param senderAddress      返金用アドレス（無ければ null）
+     * @param uuid               共有識別子（契約ID）（無ければ null）
+     * @param txid               トークン送金のトランザクションID（無ければ null）
      *
-     * fileId と senderPublicKeyHex の **両方が非 null** のときだけ、新しい
-     * `/share?sender=...&to=...&fileId=...` 形式のリンクを生成する。
-     * どちらかが null の場合は、従来通り「フォルダへのリンク」だけを本文に書く。
+     * uuid と txid の **両方が非 null** の場合、新しい形式のリンクを生成する。
      */
     fun sendEmailWithDriveLink(
         context: Context,
@@ -80,7 +81,9 @@ object EmailSender {
         fileId: String? = null,
         senderPublicKeyHex: String? = null,
         threshold: ULong? = null,
-        senderAddress: String? = null
+        senderAddress: String? = null,
+        uuid: String? = null,
+        txid: String? = null
     ) {
         val subject = "ファイル共有: $fileName"
 
@@ -88,19 +91,19 @@ object EmailSender {
         val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
         val body = buildString {
-            if (fileId != null && senderPublicKeyHex != null) {
-                // ✅ 新仕様：公開鍵 + fileId つきの /share リンク
+            if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+                // ✅ 新仕様：uuid + txid + 公開鍵 + fileId つきの /file リンク
                 val shareUrl = buildString {
-                    append("https://sharefilebcapp.web.app/share?")
-                    append("sender=").append(Uri.encode(senderPublicKeyHex))
+                    append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}?")
+                    append("uuid=").append(Uri.encode(uuid))
+                    append("&txid=").append(Uri.encode(txid))
+                    append("&sender=").append(Uri.encode(senderPublicKeyHex))
                     append("&to=").append(Uri.encode(recipientEmail))
-                    append("&fileId=").append(Uri.encode(fileId))
-                    append("&folderId=").append(Uri.encode(folderId))
                     threshold?.let {
                         append("&threshold=").append(Uri.encode(it.toString()))
                     }
                     senderAddress?.let {
-                        append("&senderAddress=").append(Uri.encode(it))
+                        append("&refund=").append(Uri.encode(it))
                     }
                 }
 

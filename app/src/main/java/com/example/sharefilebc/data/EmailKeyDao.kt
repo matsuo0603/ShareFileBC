@@ -20,4 +20,11 @@ interface EmailKeyDao {
 
     @Update
     suspend fun update(key: EmailKeyEntity)
+
+    /**
+     * ShareProcessor.registerFraudulentSender で使用
+     * TrustLayer公開鍵からメールアドレスを逆引き
+     */
+    @Query("SELECT * FROM email_keys WHERE trustLayerPublicKey = :publicKey LIMIT 1")
+    suspend fun findByTrustLayerPublicKey(publicKey: String): EmailKeyEntity?
 }
