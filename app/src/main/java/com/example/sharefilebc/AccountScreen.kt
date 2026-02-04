@@ -203,7 +203,7 @@ fun AccountScreen(
 
                     TokenSettingRow(
                         title = "トークン閾値",
-                        value = "$tokenThreshold TPC",
+                        value = "$tokenThreshold TOKEN",
                         onClick = { showThresholdPicker = true }
                     )
 
@@ -211,7 +211,7 @@ fun AccountScreen(
 
                     TokenSettingRow(
                         title = "送金量",
-                        value = "$sendFee TPC",
+                        value = "$sendFee TOKEN",
                         onClick = { showSendFeePicker = true }
                     )
                 }
@@ -831,7 +831,7 @@ private fun NetworkSettingsDialog(
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp)
-                                ) {
+                            ) {
                                 Text("保存")
                             }
                         }

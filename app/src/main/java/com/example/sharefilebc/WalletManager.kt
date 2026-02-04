@@ -201,6 +201,20 @@ class WalletManager private constructor(
         colorId: String,
         utxos: List<TxOut> = emptyList()
     ): String = withContext(Dispatchers.IO) {
+        if (amount == 0uL) {
+            throw IllegalArgumentException("amount must be > 0")
+        }
+        Log.d("WalletManager", "💸 transferToken(amount=$amount, colorId=$colorId, to=$toAddress, utxos=${utxos.size})")
+        if (amount == 0uL) {
+            throw IllegalArgumentException("amount must be > 0")
+        }
+
+        // NOTE:
+        // - TOKEN送金は「Color付きアドレス（toAddress）」と「Color付きUTXO」で表現される。
+        // - このアプリでは Constants.Strings.tokenColorId のTOKENのみを扱う前提。
+        // - 手数料（fee）はTPCで自動消費されるため、TPC残高も少量減るのは正常。
+        Log.d(tag, "💸 transferToken: amount=$amount colorId=$colorId to=$toAddress utxos=${utxos.size}")
+
         val params = TransferParams(
             amount = amount,
             toAddress = toAddress

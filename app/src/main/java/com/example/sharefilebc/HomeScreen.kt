@@ -404,7 +404,7 @@ fun HomeScreen(
                                 runCatching {
                                     withContext(Dispatchers.IO) {
                                         manager.initializeIfNeeded()
-                                        manager.getBalance()
+                                        manager.getBalance(colorId = Constants.Strings.tokenColorId)
                                     }
                                 }.onSuccess { balance ->
                                     balanceSat = balance
@@ -551,7 +551,7 @@ fun HomeScreen(
                     runCatching {
                         withContext(Dispatchers.IO) {
                             manager.sync()
-                            manager.getBalance()
+                            manager.getBalance(colorId = Constants.Strings.tokenColorId)
                         }
                     }.onSuccess { balance ->
                         balanceSat = balance
@@ -753,11 +753,41 @@ private fun BalanceOverlayDialog(
     onDismiss: () -> Unit,
     onRefresh: () -> Unit
 ) {
+    val context = LocalContext.current
+    val walletManager = remember { WalletManager.getInstance(context) }
+
+    // TPC残高（sat単位）をこのダイアログ内で取得して保持
+    var tpcSat by remember { mutableStateOf<ULong?>(null) }
+    var isTpcLoading by remember { mutableStateOf(false) }
+
+    suspend fun loadTpcBalance() {
+        isTpcLoading = true
+        val result = runCatching {
+            withContext(Dispatchers.IO) {
+                // colorId = null を「TPC」として扱う実装になっている前提
+                walletManager.getBalance(colorId = null)
+            }
+        }
+        tpcSat = result.getOrNull()
+        isTpcLoading = false
+    }
+
+    // 初回表示時にTPCを取得
+    LaunchedEffect(Unit) {
+        loadTpcBalance()
+    }
+
+    // 「残高を更新」後（isRefreshingがfalseに戻ったタイミング）でTPCも取り直す
+    LaunchedEffect(isRefreshing) {
+        if (!isRefreshing) {
+            loadTpcBalance()
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        // 背景（灰色のオーバーレイ）
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -772,7 +802,6 @@ private fun BalanceOverlayDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 28.dp)
-                    // カード内タップで閉じないようにクリックを吸収
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null
@@ -804,10 +833,11 @@ private fun BalanceOverlayDialog(
                             CircularProgressIndicator()
                         }
                     } else {
-                        val balanceDisplay = balanceSat ?: 0uL
+                        // ===== TOKEN =====
+                        val tokenDisplay = balanceSat ?: 0uL
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = balanceDisplay.toString(),
+                                text = tokenDisplay.toString(),
                                 style = MaterialTheme.typography.headlineLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -816,30 +846,58 @@ private fun BalanceOverlayDialog(
                             Text(
                                 text = "Token",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
 
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(1.dp)
                                 .background(Color(0xFFE0E0E0))
                         )
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(6.dp))
 
-                        Text(
-                            text = "${formatTpc(balanceDisplay)}  TPC",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.Medium
-                        )
+                        // ===== TPC =====
+                        if (isTpcLoading && tpcSat == null) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .width(18.dp)
+                                        .height(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "TPC 取得中...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            val tpcDisplay = tpcSat ?: 0uL
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(
+                                    text = formatTpc(tpcDisplay),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "TPC",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(6.dp))
 
-                    // お手本の青いボタン（アカウント画面のボタンと同じ色＝primary）
                     Button(
                         onClick = onRefresh,
                         enabled = !isRefreshing,
@@ -876,6 +934,7 @@ private fun BalanceOverlayDialog(
         }
     }
 }
+
 
 /* =========================================================
  * 左スワイプで削除(赤)/共有(青)

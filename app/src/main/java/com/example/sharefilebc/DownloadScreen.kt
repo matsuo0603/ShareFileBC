@@ -301,7 +301,7 @@ fun DownloadScreen(
                     val paidAmount = threshold
                     val txid = walletManager.transfer(senderAddress, paidAmount)
                     walletManager.sync()
-                    val balance = walletManager.getBalance()
+                    val balance = walletManager.getBalance(colorId = Constants.Strings.tokenColorId)
                     walletSettingsManager.setLastKnownBalance(balance)
 
                     val result = if (paidAmount >= threshold) "PAID" else "UNDERPAID"
