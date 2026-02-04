@@ -32,16 +32,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -69,20 +72,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
 import com.example.sharefilebc.data.EmailKeyEntity
 import com.example.sharefilebc.data.MyPublicKeyDao
 import com.example.sharefilebc.data.MyPublicKeyEntity
+import com.example.sharefilebc.data.SentShareEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.HomeScreenButtonColors
 import com.example.sharefilebc.ui.theme.PureWhite
@@ -94,8 +94,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
-import com.example.sharefilebc.data.SentShareEntity
 
 /**
  * 共有相手の登録・一覧・削除・共有送信を行う画面。
@@ -129,10 +132,9 @@ fun HomeScreen(
         return
     }
 
-// 以降は non-null を保証
+    // 以降は non-null を保証
     val db = dbState!!
     val userDao = db.userDao()
-
     val emailKeyDao = db.emailKeyDao()
     val myPublicKeyDao = db.myPublicKeyDao()
     val sentShareDao = db.sentShareDao()
@@ -143,19 +145,12 @@ fun HomeScreen(
     var isUploading by remember { mutableStateOf(false) }
     var isRegistering by remember { mutableStateOf(false) }
     var showAccountScreen by remember { mutableStateOf(false) }
-    var tokenThreshold by remember {
-        mutableStateOf(walletSettingsManager.getPaymentThreshold().toLong().toInt())
-    }
-    var sendFee by remember {
-        mutableStateOf(walletSettingsManager.getTokenTransferAmount().toLong().toInt())
-    }
+    var tokenThreshold by remember { mutableStateOf(walletSettingsManager.getPaymentThreshold().toLong().toInt()) }
+    var sendFee by remember { mutableStateOf(walletSettingsManager.getTokenTransferAmount().toLong().toInt()) }
     var showAddDialog by remember { mutableStateOf(false) }
     var addName by remember { mutableStateOf("") }
     var addEmail by remember { mutableStateOf("") }
     var registrationSnackbarMessage by remember { mutableStateOf<String?>(null) }
-
-    // 🔐 Tapyrus ウォレットの現在アドレス（Swift版 HomeView の currentAddress 相当）
-    var walletAddress by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -188,8 +183,11 @@ fun HomeScreen(
         }
     }
 
-    var isBalanceVisible by remember { mutableStateOf(false) }
+    // ===== 残高オーバーレイ用 State =====
+    var showBalanceOverlay by remember { mutableStateOf(false) }
+    var isBalanceLoading by remember { mutableStateOf(false) }
     var balanceSat by remember { mutableStateOf<ULong?>(null) }
+    var isBalanceSyncing by remember { mutableStateOf(false) }
 
     var selectedUser by remember { mutableStateOf<UserEntity?>(null) }
     var selectedEmailKey by remember { mutableStateOf<EmailKeyEntity?>(null) }
@@ -200,6 +198,7 @@ fun HomeScreen(
             uri ?: return@rememberLauncherForActivityResult
             val target = selectedUser ?: return@rememberLauncherForActivityResult
             val recipientKey = selectedEmailKey ?: return@rememberLauncherForActivityResult
+
             scope.launch {
                 isUploading = true
                 withContext(Dispatchers.IO) {
@@ -214,7 +213,6 @@ fun HomeScreen(
                         when (result) {
                             is UploadResult.Success -> {
                                 val (fileName, fileId, folderId) = result
-                                val wallet = KeyDerivation.getInstance(context)
                                 val myKeyEntity = withContext(Dispatchers.IO) {
                                     db.myPublicKeyDao().getPrimary()
                                 }
@@ -224,37 +222,26 @@ fun HomeScreen(
 
                                 if (senderTrustLayerPublicKey != null) {
                                     val walletManager = WalletManager.getInstance(context)
-                                    val walletSettingsManager = WalletSettingsManager.getInstance(context)
+                                    val ws = WalletSettingsManager.getInstance(context)
 
                                     scope.launch {
-                                        // 🔹 Step 1: 共有識別子（UUID）を生成
                                         val uuid = java.util.UUID.randomUUID().toString()
+                                        val transferAmount = ws.getTokenTransferAmount()
+                                        val threshold = ws.getPaymentThreshold()
 
-                                        // 🔹 Step 2: 送金量と閾値を取得
-                                        val transferAmount = walletSettingsManager.getTokenTransferAmount()
-                                        val threshold = walletSettingsManager.getPaymentThreshold()
-
-                                        // 🔹 Step 3: 返金用アドレスを生成（ColorID指定）
                                         val refundAddress = withContext(Dispatchers.IO) {
                                             runCatching {
                                                 walletManager.getNewAddressWithPublicKey(
                                                     colorId = Constants.Strings.tokenColorId
-                                                ).first  // Pair<address, publicKey> の address部分を取得
+                                                ).first
                                             }.getOrNull()
                                         }
 
                                         if (refundAddress == null) {
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "返金用アドレスの生成に失敗しました",
-                                                    Toast.LENGTH_LONG
-                                                ).show()
-                                            }
+                                            Toast.makeText(context, "返金用アドレスの生成に失敗しました", Toast.LENGTH_LONG).show()
                                             return@launch
                                         }
 
-                                        // 🔹 Step 4: P2Cアドレスを生成（受信者の公開鍵 + UUID）
                                         val p2cAddress = withContext(Dispatchers.IO) {
                                             runCatching {
                                                 walletManager.generateP2CAddress(
@@ -266,17 +253,10 @@ fun HomeScreen(
                                         }
 
                                         if (p2cAddress == null) {
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "P2Cアドレスの生成に失敗しました",
-                                                    Toast.LENGTH_LONG
-                                                ).show()
-                                            }
+                                            Toast.makeText(context, "P2Cアドレスの生成に失敗しました", Toast.LENGTH_LONG).show()
                                             return@launch
                                         }
 
-                                        // 🔹 Step 5: トークン送金を実行
                                         val txid = withContext(Dispatchers.IO) {
                                             runCatching {
                                                 walletManager.transferToken(
@@ -284,34 +264,19 @@ fun HomeScreen(
                                                     amount = transferAmount,
                                                     colorId = Constants.Strings.tokenColorId
                                                 )
-                                            }.onFailure { error ->
-                                                Log.e("HomeScreen", "❌ Token transfer failed", error)
                                             }.getOrNull()
                                         }
 
                                         if (txid == null) {
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "トークン送金に失敗しました",
-                                                    Toast.LENGTH_LONG
-                                                ).show()
-                                            }
+                                            Toast.makeText(context, "トークン送金に失敗しました", Toast.LENGTH_LONG).show()
                                             return@launch
                                         }
 
-                                        Log.d("HomeScreen", "✅ Token transfer success: txid=$txid")
-
-                                        // 🔹 Step 6: ウォレット同期
                                         withContext(Dispatchers.IO) {
-                                            runCatching {
-                                                walletManager.sync()
-                                            }.onFailure { error ->
-                                                Log.w("HomeScreen", "⚠️ Wallet sync failed", error)
-                                            }
+                                            runCatching { walletManager.sync() }
+                                                .onFailure { Log.w("HomeScreen", "⚠️ Wallet sync failed", it) }
                                         }
 
-                                        // 🔹 Step 7: SentShareEntity に記録
                                         withContext(Dispatchers.IO) {
                                             sentShareDao.insert(
                                                 SentShareEntity(
@@ -321,12 +286,11 @@ fun HomeScreen(
                                                     createdAt = nowIsoString(),
                                                     threshold = threshold.toLong(),
                                                     senderAddress = refundAddress,
-                                                    status = "PAID"  // 送金完了
+                                                    status = "PAID"
                                                 )
                                             )
                                         }
 
-                                        // 🔹 Step 8: メール送信（UUID, TXID, 返金アドレスを含む）
                                         EmailSender.sendEmailWithDriveLink(
                                             context = context,
                                             recipientEmail = target.email,
@@ -340,21 +304,10 @@ fun HomeScreen(
                                             txid = txid
                                         )
 
-                                        // 🔹 Step 9: 成功メッセージ
-                                        withContext(Dispatchers.Main) {
-                                            Toast.makeText(
-                                                context,
-                                                "ファイル共有とトークン送金が完了しました",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                        }
+                                        Toast.makeText(context, "ファイル共有とトークン送金が完了しました", Toast.LENGTH_LONG).show()
                                     }
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        "送信者の公開鍵を取得できませんでした",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    Toast.makeText(context, "送信者の公開鍵を取得できませんでした", Toast.LENGTH_LONG).show()
                                 }
                             }
 
@@ -375,11 +328,7 @@ fun HomeScreen(
                             }
 
                             is UploadResult.Failure -> {
-                                Toast.makeText(
-                                    context,
-                                    "アップロードに失敗しました（Google認証を確認）",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(context, "アップロードに失敗しました（Google認証を確認）", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
@@ -393,7 +342,6 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         userDao.getAll().collectLatest { list -> users = list }
     }
-
     LaunchedEffect(Unit) {
         emailKeyDao.getAll().collectLatest { list -> emailKeys = list }
     }
@@ -404,23 +352,7 @@ fun HomeScreen(
             val emailKey = emailKeyMap[user.email]
             val hasDerived = !emailKey?.derivedPublicKey.isNullOrBlank()
             val hasTrustLayer = !emailKey?.trustLayerPublicKey.isNullOrBlank()
-            Log.d(
-                "HomeScreen",
-                "鍵マーク判定: email=${user.email} derivedPublicKey=${hasDerived} trustLayerPublicKey=${hasTrustLayer}"
-            )
-        }
-    }
-
-    // TapyrusWalletManager から現在の受取アドレスを 1 回取得
-    LaunchedEffect(Unit) {
-        val manager = WalletManager.getInstance(context)
-
-        walletAddress = try {
-            manager.initializeIfNeeded()
-            manager.getNewAddress()
-        } catch (e: Exception) {
-            Log.e("HomeScreen", "getNewAddress failed", e)
-            null
+            Log.d("HomeScreen", "鍵マーク判定: email=${user.email} derivedPublicKey=$hasDerived trustLayerPublicKey=$hasTrustLayer")
         }
     }
 
@@ -461,38 +393,32 @@ fun HomeScreen(
             ) {
                 BalanceVisibilityButton(
                     modifier = Modifier,
-                    isVisible = isBalanceVisible,
+                    isVisible = showBalanceOverlay,
                     onClick = {
-                        scope.launch {
-                            val manager = WalletManager.getInstance(context)
-                            Log.d("BalanceDebug", "WalletManager class = ${manager::class.qualifiedName}")
-
-                            runCatching {
-                                withContext(Dispatchers.IO) {
-                                    Log.d("BalanceDebug", "initializeIfNeeded start")
-                                    manager.initializeIfNeeded()
-                                    Log.d("BalanceDebug", "initializeIfNeeded end")
-
-                                    Log.d("BalanceDebug", "sync start")
-                                    manager.sync()
-                                    Log.d("BalanceDebug", "sync end")
-
-                                    Log.d("BalanceDebug", "getBalance start")
-                                    val bal = manager.getBalance()
-                                    Log.d("BalanceDebug", "getBalance end: $bal")
-                                    bal
+                        if (!showBalanceOverlay) {
+                            // まずオーバーレイを出してから、ローカル残高を取得して表示
+                            showBalanceOverlay = true
+                            scope.launch {
+                                isBalanceLoading = true
+                                val manager = WalletManager.getInstance(context)
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        manager.initializeIfNeeded()
+                                        manager.getBalance()
+                                    }
+                                }.onSuccess { balance ->
+                                    balanceSat = balance
+                                }.onFailure { e ->
+                                    Log.e("HomeScreen", "残高取得に失敗しました", e)
+                                    Toast.makeText(context, "残高取得に失敗しました", Toast.LENGTH_LONG).show()
                                 }
-                            }.onSuccess { balance ->
-                                balanceSat = balance
-                                isBalanceVisible = !isBalanceVisible
-                            }.onFailure { e ->
-                                Log.e("HomeScreen", "残高取得に失敗しました", e)
-                                Toast.makeText(context, "残高取得に失敗しました", Toast.LENGTH_LONG).show()
+                                isBalanceLoading = false
                             }
+                        } else {
+                            showBalanceOverlay = false
                         }
                     }
                 )
-
 
                 // クリック領域も丸くする
                 Box(
@@ -508,31 +434,9 @@ fun HomeScreen(
                 }
             }
 
-            if (isBalanceVisible) {
-                Spacer(Modifier.height(16.dp))
-                val balanceDisplay = balanceSat ?: 0uL  // ★ UIntではなくULongに合わせる
-                BalanceSummaryCard(
-                    balanceTitle = "Balance",
-                    primaryAmount = balanceDisplay.toString(),
-                    primaryUnit = "Token",
-                    secondaryAmount = formatTpc(balanceDisplay),
-                    secondaryUnit = "TPC"
-                )
-            }
-
-            // 🔐 Tapyrus アドレス表示カード（Swift HomeView の currentAddress 表示に相当）
-            walletAddress?.let { addr ->
-                Spacer(Modifier.height(16.dp))
-                WalletAddressCard(
-                    address = addr,
-                    modifier = Modifier
-                )
-            }
-
-            Spacer(Modifier.height(16.dp))
-
             selectedEmailKey = null
             if (isUploading) {
+                Spacer(Modifier.height(16.dp))
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
@@ -576,6 +480,7 @@ fun HomeScreen(
                     val hasRegisteredKey = emailKey != null &&
                             emailKey.derivedPublicKey.isNotBlank() &&
                             emailKey.trustLayerPublicKey.isNotBlank()
+
                     SwipeRevealUserRow(
                         user = user,
                         hasRegisteredKey = hasRegisteredKey,
@@ -587,16 +492,10 @@ fun HomeScreen(
                         },
                         onShare = {
                             scope.launch {
-                                val emailKey = withContext(Dispatchers.IO) {
-                                    emailKeyDao.findByEmail(user.email)
-                                }
-
-                                if (emailKey == null) {
+                                val key = withContext(Dispatchers.IO) { emailKeyDao.findByEmail(user.email) }
+                                if (key == null) {
                                     val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
-                                        resolveMyKeys(
-                                            myPublicKeyDao,
-                                            context
-                                        )
+                                        resolveMyKeys(myPublicKeyDao, context)
                                     }
                                     val folderId = withContext(Dispatchers.IO) {
                                         val existingFolderId = user.folderIDFromMe
@@ -615,11 +514,7 @@ fun HomeScreen(
                                         folderId = folderId
                                     )
 
-                                    Toast.makeText(
-                                        context,
-                                        "相手の公開鍵がまだ登録されていません",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    Toast.makeText(context, "相手の公開鍵がまだ登録されていません", Toast.LENGTH_LONG).show()
 
                                     EmailSender.sendPublicKeyRegistrationEmail(
                                         context = context,
@@ -631,7 +526,7 @@ fun HomeScreen(
                                 }
 
                                 selectedUser = user
-                                selectedEmailKey = emailKey
+                                selectedEmailKey = key
                                 openFileLauncher.launch(Unit)
                             }
                         }
@@ -639,6 +534,35 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // ===== 残高オーバーレイ（お手本のUI）=====
+    if (showBalanceOverlay) {
+        BalanceOverlayDialog(
+            balanceSat = balanceSat,
+            isLoading = isBalanceLoading,
+            isRefreshing = isBalanceSyncing,
+            onDismiss = { showBalanceOverlay = false },
+            onRefresh = {
+                if (isBalanceSyncing) return@BalanceOverlayDialog
+                scope.launch {
+                    isBalanceSyncing = true
+                    val manager = WalletManager.getInstance(context)
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            manager.sync()
+                            manager.getBalance()
+                        }
+                    }.onSuccess { balance ->
+                        balanceSat = balance
+                    }.onFailure { e ->
+                        Log.e("HomeScreen", "残高更新に失敗しました", e)
+                        Toast.makeText(context, "残高更新に失敗しました", Toast.LENGTH_LONG).show()
+                    }
+                    isBalanceSyncing = false
+                }
+            }
+        )
     }
 
     if (showAccountScreen) {
@@ -709,10 +633,7 @@ fun HomeScreen(
                                         )
                                     }
                                     val (trustLayerPublicKey, derivedPublicKey) = withContext(Dispatchers.IO) {
-                                        resolveMyKeys(
-                                            myPublicKeyDao,
-                                            context
-                                        )
+                                        resolveMyKeys(myPublicKeyDao, context)
                                     }
                                     val updatedAt = withContext(Dispatchers.IO) {
                                         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
@@ -813,59 +734,6 @@ private fun BalanceVisibilityButton(
     }
 }
 
-@Composable
-private fun BalanceSummaryCard(
-    balanceTitle: String,
-    primaryAmount: String,
-    primaryUnit: String,
-    secondaryAmount: String,
-    secondaryUnit: String,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = balanceTitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.SemiBold
-            )
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    text = primaryAmount,
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = primaryUnit,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Text(
-                text = "$secondaryAmount  $secondaryUnit",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
-        }
-    }
-}
-
 private fun formatTpc(balance: ULong): String {
     val unit = 100_000_000u
     val whole = balance / unit
@@ -874,59 +742,135 @@ private fun formatTpc(balance: ULong): String {
 }
 
 /**
- * Tapyrus の現在の受取アドレスを表示するカード。
- * Swift HomeView で currentAddress を表示しているカードに相当。
+ * 残高を画面中央に表示するオーバーレイ。
+ * 共有相手登録ダイアログと同じ「背景を少し灰色にして中央にカード」を出すUI。
  */
 @Composable
-private fun WalletAddressCard(
-    address: String,
-    modifier: Modifier = Modifier
+private fun BalanceOverlayDialog(
+    balanceSat: ULong?,
+    isLoading: Boolean,
+    isRefreshing: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit
 ) {
-    val clipboard = LocalClipboardManager.current
-    val context = LocalContext.current
-
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Column(
+        // 背景（灰色のオーバーレイ）
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.35f))
+                .offset(y = (-80).dp)
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "My Tapyrus Address",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.SemiBold
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+            val interactionSource = remember { MutableInteractionSource() }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 28.dp)
+                    // カード内タップで閉じないようにクリックを吸収
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null
+                    ) { },
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = PureWhite),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
             ) {
-                Text(
-                    text = address,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(12.dp))
-                IconButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(address))
-                        Toast.makeText(context, "アドレスをコピーしました", Toast.LENGTH_SHORT).show()
-                    }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "アドレスをコピー"
+                    Text(
+                        text = "Balance",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold
                     )
+
+                    if (isLoading && balanceSat == null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 18.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        val balanceDisplay = balanceSat ?: 0uL
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = balanceDisplay.toString(),
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Token",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(Color(0xFFE0E0E0))
+                        )
+                        Spacer(Modifier.height(2.dp))
+
+                        Text(
+                            text = "${formatTpc(balanceDisplay)}  TPC",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+
+                    // お手本の青いボタン（アカウント画面のボタンと同じ色＝primary）
+                    Button(
+                        onClick = onRefresh,
+                        enabled = !isRefreshing,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .width(18.dp)
+                                    .height(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("残高を更新")
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = "残高を更新"
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("残高を更新")
+                        }
+                    }
                 }
             }
         }
@@ -1078,9 +1022,9 @@ private suspend fun resolveMyKeys(
             )
         )
     }
-
     return trustLayer to derived
 }
+
 private fun nowIsoString(): String {
     val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.getDefault())
     formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")

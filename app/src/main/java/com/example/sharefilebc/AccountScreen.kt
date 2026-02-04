@@ -638,15 +638,15 @@ private fun NetworkSettingsDialog(
 ) {
     val appContext = LocalContext.current.applicationContext
     val config by viewModel.networkConfig.collectAsState()
-    var selectedPreset by remember { mutableStateOf(config.preset) }
     var selectedMode by remember { mutableStateOf(config.networkMode) }
     var networkIdInput by remember { mutableStateOf(config.networkId.toString()) }
     var genesisHashInput by remember { mutableStateOf(config.genesisHash) }
     var esploraUrlInput by remember { mutableStateOf(config.esploraUrl) }
-    var showPresetMenu by remember { mutableStateOf(false) }
     var showModeMenu by remember { mutableStateOf(false) }
+    var showEditControls by remember { mutableStateOf(false) }
     // Kotlin 1.9+ : Enum.values() より Enum.entries 推奨
     val networkModes = remember { com.chaintope.tapyrus.wallet.Network.entries }
+    val tokenColorId = Constants.Strings.tokenColorId
 
     Dialog(
         onDismissRequest = onClose,
@@ -683,6 +683,15 @@ private fun NetworkSettingsDialog(
                         textAlign = TextAlign.Center,
                         maxLines = 1
                     )
+                    TextButton(
+                        onClick = { showEditControls = !showEditControls },
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    ) {
+                        Text(
+                            text = "変更",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -698,49 +707,64 @@ private fun NetworkSettingsDialog(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                     ) {
                         Text(
-                            text = "ネットワークプリセット",
+                            text = "システム設定",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(Modifier.height(6.dp))
-                        Box {
-                            Button(
-                                onClick = { showPresetMenu = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = when (selectedPreset) {
-                                        WalletNetworkPreset.PROD -> "本番（既定）"
-                                        WalletNetworkPreset.CUSTOM -> "カスタム"
-                                    }
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showPresetMenu,
-                                onDismissRequest = { showPresetMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("本番（既定）") },
-                                    onClick = {
-                                        selectedPreset = WalletNetworkPreset.PROD
-                                        showPresetMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("カスタム") },
-                                    onClick = {
-                                        selectedPreset = WalletNetworkPreset.CUSTOM
-                                        showPresetMenu = false
-                                    }
-                                )
-                            }
-                        }
-
-                        if (selectedPreset == WalletNetworkPreset.CUSTOM) {
-                            Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "カラーID",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = tokenColorId,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "ネットワーク設定",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "index サーバURL",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = config.esploraUrl,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "ネットワークモード",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = config.networkMode.name,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "ネットワークID",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = config.networkId.toString(),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (showEditControls) {
+                            Spacer(Modifier.height(16.dp))
                             Text(
-                                text = "カスタム設定",
+                                text = "編集",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -792,37 +816,24 @@ private fun NetworkSettingsDialog(
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
-                        } else {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "既定の Tapyrus 本番ネットワーク設定を使用します。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                val newConfig = if (selectedPreset == WalletNetworkPreset.PROD) {
-                                    WalletSettingsManager.getInstance(appContext).defaultNetworkConfig()
-
-                                } else {
-                                    WalletNetworkConfig(
+                            Spacer(Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    val newConfig = WalletNetworkConfig(
                                         preset = WalletNetworkPreset.CUSTOM,
                                         networkMode = selectedMode,
                                         networkId = networkIdInput.toUIntOrNull() ?: config.networkId,
                                         genesisHash = genesisHashInput.trim(),
                                         esploraUrl = esploraUrlInput.trim()
                                     )
-                                }
-                                viewModel.updateNetworkConfig(newConfig)
-                                onConfigApplied()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("保存")
+                                    viewModel.updateNetworkConfig(newConfig)
+                                    onConfigApplied()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                                ) {
+                                Text("保存")
+                            }
                         }
                     }
                 }
