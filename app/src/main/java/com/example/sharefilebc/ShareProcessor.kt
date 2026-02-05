@@ -18,7 +18,7 @@ import java.time.format.DateTimeFormatter
 
 /**
  * 共有ファイルの送金検証・返金処理
- * Swift版のTapyrusWalletManager.processReceivedShare / refundShareに相当
+ * Swift版の TapyrusWalletManager.processReceivedShare / refundShare に相当
  */
 object ShareProcessor {
 
@@ -100,12 +100,14 @@ object ShareProcessor {
             val senderIsBlocked = isSenderBlocked(context, senderPublicKey)
 
             // 5. 閾値チェックと判定
-            val payable = totalAmount < threshold
+            // payable=true の意味を「自由に使える（ロック解除）」として使っているので、
+            // ここでは underpaid 判定として名前だけ維持（ロジックは同じ）
+            val underpaid = totalAmount < threshold
             val contractId = "shared-file-$uuid"
 
-            if (payable || senderIsBlocked) {
+            if (underpaid || senderIsBlocked) {
                 // ❌ 不正判定：閾値未満 or ブロック済み
-                Log.w(TAG, "🚫 Share rejected: payable=$payable, blocked=$senderIsBlocked")
+                Log.w(TAG, "🚫 Share rejected: underpaid=$underpaid, blocked=$senderIsBlocked")
 
                 // Contract保存（payable=true: 自由に使える）
                 val contract = Contract(
@@ -140,7 +142,8 @@ object ShareProcessor {
             // ✅ 正常判定：閾値以上
             Log.d(TAG, "✅ Share accepted: amount=$totalAmount >= threshold=$threshold")
 
-            // Contract保存（payable=false: 返金専用にロック）
+            // ✅ ここが重要：
+            // 正常受信時は payable=false（返金処理のためにロック）にする
             val contract = Contract(
                 contractId = contractId,
                 contract = uuid,
@@ -185,7 +188,7 @@ object ShareProcessor {
 
     /**
      * ✅ 多重実行・再入に強くする：既に存在するContractなら成功扱いにする
-     * これで "contract already exists" が出ても事故らない（Swift版の idempotent 的動き）
+     * これで "contract already exists" が出ても事故らない
      */
     private fun storeContractIdempotent(walletManager: WalletManager, contract: Contract) {
         runCatching {
@@ -197,7 +200,6 @@ object ShareProcessor {
             if (isAlready) {
                 Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
             } else {
-                // ここは上位で落とす
                 throw e
             }
         }
@@ -254,7 +256,7 @@ object ShareProcessor {
             val utxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
             var totalAmount = 0UL
 
-            for ((txid, tx) in transactions) {
+            for ((_, tx) in transactions) {
                 val outputs = walletManager.getTxOutByAddress(tx, p2cAddress)
                 outputs.filter { it.unspent }.forEach { out ->
                     utxos.add(out)
@@ -330,7 +332,7 @@ object ShareProcessor {
     // ============================================================
 
     /**
-     * ✅ 修正版：copyを使ってReceivedFileEntityを更新
+     * copyを使ってReceivedFileEntityを更新
      */
     private suspend fun updateReceivedFile(
         context: Context,

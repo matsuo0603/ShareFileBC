@@ -238,7 +238,11 @@ fun HomeScreen(
                                         }
 
                                         if (refundAddress == null) {
-                                            Toast.makeText(context, "返金用アドレスの生成に失敗しました", Toast.LENGTH_LONG).show()
+                                            Toast.makeText(
+                                                context,
+                                                "返金用アドレスの生成に失敗しました",
+                                                Toast.LENGTH_LONG
+                                            ).show()
                                             return@launch
                                         }
 
@@ -253,7 +257,11 @@ fun HomeScreen(
                                         }
 
                                         if (p2cAddress == null) {
-                                            Toast.makeText(context, "P2Cアドレスの生成に失敗しました", Toast.LENGTH_LONG).show()
+                                            Toast.makeText(
+                                                context,
+                                                "P2Cアドレスの生成に失敗しました",
+                                                Toast.LENGTH_LONG
+                                            ).show()
                                             return@launch
                                         }
 
@@ -263,14 +271,17 @@ fun HomeScreen(
                                                     toAddress = p2cAddress,
                                                     amount = transferAmount,
                                                     colorId = Constants.Strings.tokenColorId,
-                                                    utxos = emptyList()   // ← これを追加
+                                                    utxos = emptyList()   // ←必要なら後でUTXOを渡す
                                                 )
                                             }.getOrNull()
                                         }
 
-
                                         if (txid == null) {
-                                            Toast.makeText(context, "トークン送金に失敗しました", Toast.LENGTH_LONG).show()
+                                            Toast.makeText(
+                                                context,
+                                                "トークン送金に失敗しました",
+                                                Toast.LENGTH_LONG
+                                            ).show()
                                             return@launch
                                         }
 
@@ -306,10 +317,18 @@ fun HomeScreen(
                                             txid = txid
                                         )
 
-                                        Toast.makeText(context, "ファイル共有とトークン送金が完了しました", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(
+                                            context,
+                                            "ファイル共有とトークン送金が完了しました",
+                                            Toast.LENGTH_LONG
+                                        ).show()
                                     }
                                 } else {
-                                    Toast.makeText(context, "送信者の公開鍵を取得できませんでした", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        context,
+                                        "送信者の公開鍵を取得できませんでした",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
 
@@ -330,7 +349,11 @@ fun HomeScreen(
                             }
 
                             is UploadResult.Failure -> {
-                                Toast.makeText(context, "アップロードに失敗しました（Google認証を確認）", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    "アップロードに失敗しました（Google認証を確認）",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                     }
@@ -354,7 +377,10 @@ fun HomeScreen(
             val emailKey = emailKeyMap[user.email]
             val hasDerived = !emailKey?.derivedPublicKey.isNullOrBlank()
             val hasTrustLayer = !emailKey?.trustLayerPublicKey.isNullOrBlank()
-            Log.d("HomeScreen", "鍵マーク判定: email=${user.email} derivedPublicKey=$hasDerived trustLayerPublicKey=$hasTrustLayer")
+            Log.d(
+                "HomeScreen",
+                "鍵マーク判定: email=${user.email} derivedPublicKey=$hasDerived trustLayerPublicKey=$hasTrustLayer"
+            )
         }
     }
 
@@ -516,7 +542,11 @@ fun HomeScreen(
                                         folderId = folderId
                                     )
 
-                                    Toast.makeText(context, "相手の公開鍵がまだ登録されていません", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        context,
+                                        "相手の公開鍵がまだ登録されていません",
+                                        Toast.LENGTH_LONG
+                                    ).show()
 
                                     EmailSender.sendPublicKeyRegistrationEmail(
                                         context = context,
