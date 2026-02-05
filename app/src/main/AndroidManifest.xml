@@ -3,7 +3,6 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.example.sharefilebc">
 
-    <!-- ✅ パーミッション -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -25,120 +24,64 @@
         android:theme="@style/Theme.ShareFileBC"
         tools:targetApi="31">
 
-        <!-- ✅ HomeActivity: Deep Link / App Links 対応 -->
         <activity
             android:name=".HomeActivity"
             android:exported="true"
             android:launchMode="singleTask">
 
-            <!-- 🚀 Launcher：HomeActivityをアプリの入口に統一（Deep Linkのintent.data欠落を防ぐ） -->
+            <!-- Launcher -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- ✅ /download をアプリ優先で拾う（uuid/txid/refund 付きURLが Chrome に吸われる対策） -->
+            <!-- App Links (https) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/download" />
+
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/download" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/folder" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/share" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/file" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/pubkey" />
             </intent-filter>
 
+            <!-- Fallback (http) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="http"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/download" />
+
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/download" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/folder" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/share" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/file" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/pubkey" />
             </intent-filter>
 
-            <!-- 🔷 App Links（最優先：ホスト一致なら全パスを拾う。クエリ形式/パス変更に強い） -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <!-- https / http の両方を受ける（送信側URLの揺れ対策） -->
-                <data android:scheme="https" android:host="sharefilebcapp.web.app" />
-                <data android:scheme="http" android:host="sharefilebcapp.web.app" />
-            </intent-filter>
-
-            <!-- 🔷 カスタムスキーム（互換用：必要なら残す） -->
+            <!-- Custom scheme compatibility -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="sharefilebc"
-                    android:host="download" />
+                <data android:scheme="sharefilebc" android:host="download" />
             </intent-filter>
 
-            <!-- 🔷 App Links（新URL） https://sharefilebcapp.web.app/folder/<ID> -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/folder" />
-            </intent-filter>
-
-            <!-- 🔷 App Links（公開鍵共有 & ダウンロード遷移） -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/share" />
-            </intent-filter>
-
-            <!-- 🔷 公開鍵登録用 Deep Link -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/pubkey" />
-            </intent-filter>
-
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebcapp.web.app"
-                    android:pathPrefix="/file" />
-            </intent-filter>
-
-            <!-- 🔷 カスタムスキーム（ホスティング経由で404になってもアプリへ誘導） -->
+            <!-- Custom scheme (hosting 404 fallback etc.) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="myapp"
-                    android:host="open" />
+                <data android:scheme="myapp" android:host="open" />
             </intent-filter>
         </activity>
 
-        <!-- 🔓 Login -->
         <activity
             android:name=".LoginActivity"
             android:exported="true" />
 
-        <!-- 旧MainActivityは入口に使わない -->
         <activity
             android:name=".MainActivity"
             android:exported="false" />

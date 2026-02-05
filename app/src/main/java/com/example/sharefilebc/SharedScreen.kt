@@ -29,6 +29,8 @@ private enum class SharedInnerTab(val label: String) {
     Received("受信");
 }
 
+private const val DL_TAG = "DL_DEBUG"
+
 @Composable
 fun SharedScreen(
     modifier: Modifier = Modifier,
@@ -39,10 +41,9 @@ fun SharedScreen(
     deepLinkSenderAddress: String? = null,
     deepLinkThreshold: ULong? = null,
     deepLinkUuid: String? = null,
-    deepLinkTxid: String? = null,
+    deepLinkTxid: String? = null, // カンマ区切り想定
     deepLinkRefundAddress: String? = null,
 ) {
-    // ✅ folderId/fileId がなくても uuid/txid があれば「受信」タブ開始
     val shouldOpenReceived =
         (initialFolderId != null || initialFileId != null) ||
                 (!deepLinkUuid.isNullOrBlank() && !deepLinkTxid.isNullOrBlank())
@@ -53,69 +54,81 @@ fun SharedScreen(
 
     val context = LocalContext.current
 
-    // ✅ 多重実行ガード（メモリ内 + DB存在チェック）
+    val txidList = remember(deepLinkTxid) {
+        deepLinkTxid
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            ?: emptyList()
+    }
+
+    val processKey = remember(deepLinkUuid, txidList) {
+        val uuid = deepLinkUuid?.trim().orEmpty()
+        if (uuid.isBlank() || txidList.isEmpty()) "" else "$uuid|${txidList.sorted().joinToString(",")}"
+    }
+
     val processedMap = remember { mutableStateMapOf<String, Boolean>() }
 
-    LaunchedEffect(
-        selectedTab,
-        deepLinkUuid,
-        deepLinkTxid,
-        deepLinkSenderPublicKey,
-        deepLinkThreshold,
-        deepLinkRefundAddress
-    ) {
-        if (selectedTab != SharedInnerTab.Received) return@LaunchedEffect
+    LaunchedEffect(processKey, selectedTab) {
+        if (processKey.isBlank()) {
+            Log.d(DL_TAG, "[SharedScreen] skip: empty processKey")
+            return@LaunchedEffect
+        }
+        if (selectedTab != SharedInnerTab.Received) {
+            Log.d(DL_TAG, "[SharedScreen] skip: selectedTab=$selectedTab processKey=$processKey")
+            return@LaunchedEffect
+        }
 
-        val uuid = deepLinkUuid
-        val txid = deepLinkTxid
-        val senderKey = deepLinkSenderPublicKey
+        val uuid = deepLinkUuid?.trim()
+        val senderKey = deepLinkSenderPublicKey?.trim()
         val threshold = deepLinkThreshold
 
-        if (uuid.isNullOrBlank() || txid.isNullOrBlank() || senderKey.isNullOrBlank() || threshold == null) {
+        if (uuid.isNullOrBlank() || txidList.isEmpty() || senderKey.isNullOrBlank() || threshold == null) {
+            Log.d(
+                DL_TAG,
+                "[SharedScreen] missing params uuid=$uuid txids=${txidList.size} senderKeyEmpty=${senderKey.isNullOrBlank()} threshold=$threshold"
+            )
             return@LaunchedEffect
         }
 
-        val key = "$uuid|$txid"
-
-        // ① メモリ内ガード（再描画・タブ切替）
-        if (processedMap[key] == true) {
-            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already processed in-memory) key=$key")
+        // ① メモリガード
+        if (processedMap[processKey] == true) {
+            Log.d(DL_TAG, "[SharedScreen] skip by memory guard key=$processKey")
             return@LaunchedEffect
         }
 
-        // ② DBガード（アプリ再起動・リンク再オープン）
+        // ② DBガード（received_files OR refund_tasks）
         val alreadyProcessedInDb = withContext(Dispatchers.IO) {
             val db = AppDatabase.getDatabase(context)
-            db.receivedFileDao().findByShareId(uuid) != null
+            val hasReceived = db.receivedFileDao().findByShareId(uuid) != null
+            val hasRefundTask = db.refundTaskDao().findByShareId(uuid) != null
+            hasReceived || hasRefundTask
         }
         if (alreadyProcessedInDb) {
-            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already processed in-DB) key=$key")
-            processedMap[key] = true
+            processedMap[processKey] = true
+            Log.d(DL_TAG, "[SharedScreen] skip by DB guard key=$processKey")
             return@LaunchedEffect
         }
 
-        Log.d(
-            "SharedScreen",
-            "🔍 processReceivedShare start uuid=$uuid txid=${txid.take(8)}... threshold=$threshold"
-        )
+        Log.d(DL_TAG, "[SharedScreen] processReceivedShare start key=$processKey")
 
-        val result = runCatching {
+        runCatching {
             ShareProcessor.processReceivedShare(
                 context = context,
                 uuid = uuid,
-                txids = listOf(txid),
+                txids = txidList,
                 senderPublicKey = senderKey,
                 refundAddress = deepLinkRefundAddress,
                 threshold = threshold,
                 colorId = Constants.Strings.tokenColorId
             )
-        }.onFailure {
-            Log.e("SharedScreen", "❌ processReceivedShare failed", it)
-        }.getOrNull()
-
-        Log.d("SharedScreen", "✅ processReceivedShare result=$result uuid=$uuid txid=${txid.take(8)}...")
-
-        processedMap[key] = true
+        }.onSuccess { result ->
+            processedMap[processKey] = true
+            Log.d(DL_TAG, "[SharedScreen] processReceivedShare end key=$processKey result=$result")
+        }.onFailure { throwable ->
+            Log.e(DL_TAG, "[SharedScreen] processReceivedShare failed key=$processKey", throwable)
+        }
     }
 
     Column(
@@ -157,7 +170,6 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    // ✅ DownloadScreen は「表示専用」。deep link 情報は渡してもいいが処理しない。
                     DownloadScreen(
                         initialFolderId = initialFolderId,
                         initialFileId = initialFileId,

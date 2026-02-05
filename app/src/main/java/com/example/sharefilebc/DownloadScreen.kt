@@ -99,9 +99,14 @@ fun DownloadScreen(
     val receivedDao = remember { db.receivedFolderDao() }
     val userDao = remember { db.userDao() }
     val sharePaymentDao = remember { db.sharePaymentDao() }
+    val receivedFileDao = remember { db.receivedFileDao() }
+    val refundTaskDao = remember { db.refundTaskDao() }
 
     val receivedFolders by receivedDao.getAll().collectAsState(initial = emptyList())
     val users by userDao.getAll().collectAsState(initial = emptyList())
+    val receivedFiles by receivedFileDao.observeAll().collectAsState(initial = emptyList())
+    val refundTasks by refundTaskDao.observeAll().collectAsState(initial = emptyList())
+
 
     var isLoading by remember { mutableStateOf(false) }
     var needsLogin by remember { mutableStateOf(false) }
@@ -344,6 +349,13 @@ fun DownloadScreen(
                     context.startActivity(Intent(context, LoginActivity::class.java))
                 })
             }
+
+            ReceivedProcessingSummaryCard(
+                receivedCount = receivedFiles.size,
+                refundPendingCount = refundTasks.size,
+                recentShareIds = receivedFiles.mapNotNull { it.shareID }.distinct().take(3)
+            )
+
 
             if (senderGroups.isEmpty()) {
                 Box(
@@ -750,3 +762,38 @@ private fun nowIsoString(): String {
     formatter.timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
     return formatter.format(java.util.Date())
 }
+
+@Composable
+private fun ReceivedProcessingSummaryCard(
+    receivedCount: Int,
+    refundPendingCount: Int,
+    recentShareIds: List<String>
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "受信処理サマリー",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "受信済み: ${receivedCount}件 / 返金待ち: ${refundPendingCount}件",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (recentShareIds.isNotEmpty()) {
+                Text(
+                    text = "shareID: ${recentShareIds.joinToString()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+

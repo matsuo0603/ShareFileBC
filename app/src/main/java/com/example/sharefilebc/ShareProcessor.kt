@@ -23,6 +23,7 @@ import java.time.format.DateTimeFormatter
 object ShareProcessor {
 
     private const val TAG = "ShareProcessor"
+    private const val DL_TAG = "DL_DEBUG"
 
     /**
      * 受信した共有の検証処理
@@ -41,6 +42,16 @@ object ShareProcessor {
 
         val walletManager = WalletManager.getInstance(context)
         val db = AppDatabase.getDatabase(context)
+
+        // ✅ DBガード（ここで止める：二重処理事故防止）
+        val alreadyProcessed =
+            (db.receivedFileDao().findByShareId(uuid) != null) ||
+                    (db.refundTaskDao().findByShareId(uuid) != null)
+
+        if (alreadyProcessed) {
+            Log.d(DL_TAG, "[ShareProcessor] DB guard hit. already processed uuid=$uuid")
+            return@withContext ShareProcessResult.Success(0UL)
+        }
 
         try {
             // 1. 自分の公開鍵取得（TrustLayer用）
