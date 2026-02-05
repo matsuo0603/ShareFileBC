@@ -28,7 +28,46 @@
         <!-- ✅ HomeActivity: Deep Link / App Links 対応 -->
         <activity
             android:name=".HomeActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
+
+            <!-- 🚀 Launcher：HomeActivityをアプリの入口に統一（Deep Linkのintent.data欠落を防ぐ） -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- ✅ /download をアプリ優先で拾う（uuid/txid/refund 付きURLが Chrome に吸われる対策） -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="sharefilebcapp.web.app"
+                    android:pathPrefix="/download" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="http"
+                    android:host="sharefilebcapp.web.app"
+                    android:pathPrefix="/download" />
+            </intent-filter>
+
+            <!-- 🔷 App Links（最優先：ホスト一致なら全パスを拾う。クエリ形式/パス変更に強い） -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <!-- https / http の両方を受ける（送信側URLの揺れ対策） -->
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" />
+            </intent-filter>
 
             <!-- 🔷 カスタムスキーム（互換用：必要なら残す） -->
             <intent-filter>
@@ -99,15 +138,10 @@
             android:name=".LoginActivity"
             android:exported="true" />
 
-        <!-- 🚀 Launcher -->
+        <!-- 旧MainActivityは入口に使わない -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="false" />
 
     </application>
 </manifest>

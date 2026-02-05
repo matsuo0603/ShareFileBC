@@ -1,6 +1,7 @@
 package com.example.sharefilebc
 
 import android.content.Intent
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -30,8 +31,6 @@ import com.example.sharefilebc.data.SharePaymentEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import kotlinx.coroutines.launch
-import com.example.sharefilebc.data.UserDao
-import android.util.Log
 
 private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
 
@@ -149,49 +148,42 @@ fun DownloadScreen(
         }
     }
 
-    LaunchedEffect(initialFolderId, initialFileId, deepLinkSenderPublicKey) {
-        if (initialFolderId != null || initialFileId != null) {
-            isLoading = true
+    /**
+     * ✅ 重要：DownloadScreen は「表示専用」へ
+     *
+     * deep link 起点で
+     * - Drive へアクセスして folder/file を解決する
+     * - ReceivedFolderEntity を insert する
+     * - sender 公開鍵を登録する
+     * などの「受信処理」をここで行わない。
+     *
+     * 受信（検証・返金・ブロック・sync・DB保存）は Shared 側で完了している前提。
+     *
+     * ここでは deep link が来ていた場合、Room の received_folders から「該当 folderId の sender」を探して
+     * 自動で sender を選択するだけにする。
+     */
+    LaunchedEffect(initialFolderId, initialFileId, receivedFolders) {
+        if (initialFolderId.isNullOrBlank() && initialFileId.isNullOrBlank()) return@LaunchedEffect
+
+        Log.d(
+            "DownloadScreen",
+            "DeepLink(display-only): folder=$initialFolderId file=$initialFileId uuid=$deepLinkUuid txid=${deepLinkTxid?.take(8)}..."
+        )
+
+        // folderId が Room に存在するなら、その sender を開く
+        val matched = initialFolderId?.let { fid ->
+            receivedFolders.firstOrNull { it.folderId == fid }
+        }
+
+        if (matched != null) {
+            selectedSender = matched.senderName
+            pendingAutoDownloadFileId = initialFileId
             needsLogin = false
-            Log.d(
-                "DownloadScreen",
-                "DeepLink start: folder=$initialFolderId, file=$initialFileId, senderKey=${deepLinkSenderPublicKey?.take(6)}, to=$deepLinkRecipientEmail"
-            )
-
-            if (initialFileId != null) {
-                val contextResult = downloader.resolveFileContext(initialFileId)
-                if (contextResult == null) {
-                    needsLogin = true
-                    isLoading = false
-                    return@LaunchedEffect
-                }
-
-                if (!deepLinkSenderPublicKey.isNullOrBlank()) {
-                    registerSenderPublicKey(
-                        userDao = userDao,
-                        senderName = contextResult.ownerName,
-                        senderEmail = contextResult.ownerEmail,
-                        publicKeyHex = deepLinkSenderPublicKey
-                    )
-                }
-
-                val result = handleInitialFolder(contextResult.parentFolderId, downloader, receivedDao)
-                isLoading = false
-                if (result == null) {
-                    needsLogin = true
-                } else {
-                    selectedSender = result.senderName
-                    pendingAutoDownloadFileId = initialFileId
-                }
-            } else {
-                val result = handleInitialFolder(initialFolderId!!, downloader, receivedDao)
-                isLoading = false
-                if (result == null) {
-                    needsLogin = true
-                } else {
-                    selectedSender = result.senderName
-                }
-            }
+        } else {
+            // まだ Shared 側の受信処理が DB 保存を終えてない可能性があるので
+            // ここでは何もしない（＝勝手にDriveへ行かない）
+            // ユーザーに「受信処理中」の状態が伝わるようにログだけ出す
+            Log.d("DownloadScreen", "DeepLink folderId not found in Room yet. Waiting for Shared processing.")
         }
     }
 
@@ -260,6 +252,7 @@ fun DownloadScreen(
         detailState = detail
         detailCache[sender] = detail
     }
+
     LaunchedEffect(detailState, pendingAutoDownloadFileId, canDownload) {
         val targetFileId = pendingAutoDownloadFileId ?: return@LaunchedEffect
         if (!canDownload) return@LaunchedEffect
@@ -456,83 +449,6 @@ private fun buildSenderSummaries(
             )
         }
         .sortedByDescending { it.latestUpload }
-}
-
-private data class InitialFolderResult(
-    val senderName: String
-)
-
-private suspend fun handleInitialFolder(
-    folderId: String,
-    downloader: DriveDownloader,
-    dao: com.example.sharefilebc.data.ReceivedFolderDao
-): InitialFolderResult? {
-    val folderStructure = downloader.getFolderStructure(folderId) ?: return null
-
-    val dateChild = folderStructure.files.firstOrNull { it.isFolder && DATE_REGEX.find(it.name) != null }
-    val (targetId, targetStructure) = if (dateChild != null) {
-        val childStructure = downloader.getFolderStructure(dateChild.id) ?: return null
-        dateChild.id to childStructure.copy(folderName = childStructure.folderName.toDateOnly())
-    } else {
-        folderId to folderStructure.copy(folderName = folderStructure.folderName.toDateOnly())
-    }
-
-    val firstFile = targetStructure.files.firstOrNull { !it.isFolder }
-    val senderName = firstFile?.senderName?.takeIf { it.isNotBlank() } ?: "Unknown Sender"
-    val upload = firstFile?.uploadDateTime ?: ""
-    val delete = firstFile?.deleteDateTime ?: ""
-
-    val exists = dao.findByFolderId(targetId)
-    val entity = ReceivedFolderEntity(
-        folderId = targetId,
-        folderName = targetStructure.folderName.toDateOnly(),
-        senderName = senderName,
-        uploadDateTime = upload,
-        deleteDateTime = delete
-    )
-
-    if (exists == null) {
-        dao.insert(entity)
-    } else if (
-        exists.senderName != entity.senderName ||
-        exists.folderName != entity.folderName ||
-        exists.uploadDateTime != entity.uploadDateTime ||
-        exists.deleteDateTime != entity.deleteDateTime
-    ) {
-        dao.insert(entity.copy(id = exists.id))
-    }
-
-    return InitialFolderResult(senderName = senderName)
-}
-private suspend fun registerSenderPublicKey(
-    userDao: UserDao,
-    senderName: String,
-    senderEmail: String?,
-    publicKeyHex: String,
-) {
-    senderEmail?.let { email ->
-        val existing = userDao.findByEmail(email)
-        if (existing != null) {
-            userDao.updatePublicKeyByEmail(email, publicKeyHex)
-            return
-        }
-    }
-
-    val existingByName = userDao.findByName(senderName)
-    if (existingByName != null) {
-        userDao.updatePublicKeyByEmail(existingByName.email, publicKeyHex)
-        return
-    }
-
-    val resolvedName = senderName.ifBlank { senderEmail ?: "Unknown Sender" }
-    val resolvedEmail = senderEmail ?: senderName
-    userDao.upsertByEmail(
-        UserEntity(
-            name = resolvedName,
-            email = resolvedEmail,
-            publicKeyHex = publicKeyHex
-        )
-    )
 }
 
 @Composable

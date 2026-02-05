@@ -1,3 +1,4 @@
+// HomeActivity.kt
 package com.example.sharefilebc
 
 import android.content.Intent
@@ -31,40 +32,42 @@ class HomeActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "HomeActivity"
+        private const val DL_TAG = "DL_DEBUG"
     }
 
     private data class DeepLinkParams(
-        val folderId: String?,
-        val fileId: String?,
-        val senderPublicKey: String?,
-        val recipientEmail: String?,
-        val senderAddress: String?,
-        val threshold: ULong?,
-        val uuid: String?,
-        val txid: String?,
-        val refundAddress: String?
+        val folderId: String? = null,
+        val fileId: String? = null,
+        val senderPublicKey: String? = null,
+        val recipientEmail: String? = null,
+        val senderAddress: String? = null,
+        val threshold: ULong? = null,
+        val uuid: String? = null,
+        val txid: String? = null,
+        val refundAddress: String? = null,
     )
 
-    // ✅ Activity側で状態を保持（onNewIntent からも更新できるようにする）
-    private var selectedTabState = mutableStateOf(BottomTab.Home)
-    private var deepLinkParamsState = mutableStateOf<DeepLinkParams?>(null)
+    /**
+     * ✅ Swift版に合わせるための設計
+     * - DeepLink を受けた瞬間に「Shared」タブへ切り替える
+     * - 受信処理（検証/返金/ブロック/sync）は SharedScreen 側で 1回だけ 実行する
+     * - DownloadScreen は保存済み結果の表示専用
+     *
+     * そのため HomeActivity は「DeepLinkを受け取ってUI状態に反映」だけを担当する。
+     * ※ DeepLink は onNewIntent でも来るため、Activity側の state を更新する。
+     */
+    private val selectedTabState = mutableStateOf(BottomTab.Home)
+    private val deepLinkParamsState = mutableStateOf(DeepLinkParams())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ✅ WalletManager の初期化を最優先で実行（ただし UI はブロックしない）
+        // ✅ WalletManager 初期化（UIはブロックしない）
         lifecycleScope.launch {
             runCatching {
                 val walletManager = WalletManager.getInstance(this@HomeActivity)
                 walletManager.initializeIfNeeded()
                 Log.d(TAG, "✅ WalletManager initialized successfully")
-
-                val currentAddress = walletManager.getNewAddress()
-                Log.d(TAG, "Tapyrus current address = $currentAddress")
-
-                val (address, pubKey) = walletManager.getNewAddressWithPublicKey()
-                Log.d(TAG, "Tapyrus public key = $pubKey")
-                Log.d(TAG, "Tapyrus address = $address")
             }.onFailure { e ->
                 Log.e(TAG, "❌ WalletManager initialization failed", e)
                 Toast.makeText(
@@ -75,95 +78,16 @@ class HomeActivity : ComponentActivity() {
             }
         }
 
-        // ✅ 起動時 deep link をここで一元処理
-        handleIncomingIntent(intent, isFirstLaunch = true)
+        // ✅ DeepLink 入口ログ（onCreate）
+        logDeepLinkIntent("onCreate", intent)
 
-        setContent {
-            ShareFileBCTheme {
-                val selectedTab by selectedTabState
-                val deepLink = deepLinkParamsState.value
+        // ✅ DeepLink を解析して state に反映（ここで Shared へ切替される）
+        applyDeepLinkIfAny(intent)
 
-                Scaffold(
-                    bottomBar = {
-                        BottomNavigationBar(
-                            selectedTab = selectedTab,
-                            onTabSelected = { selectedTabState.value = it }
-                        )
-                    }
-                ) { innerPadding ->
-                    when (selectedTab) {
-                        BottomTab.Home -> {
-                            HomeScreen(
-                                modifier = Modifier.padding(innerPadding),
-                            )
-                        }
-
-                        BottomTab.Shared -> {
-                            SharedScreen(
-                                modifier = Modifier.padding(innerPadding),
-                                // ✅ SharedScreenで処理する。DownloadScreenにはdeep linkを渡さない方針にする
-                                initialFolderId = deepLink?.folderId,
-                                initialFileId = deepLink?.fileId,
-                                deepLinkSenderPublicKey = deepLink?.senderPublicKey,
-                                deepLinkRecipientEmail = deepLink?.recipientEmail,
-                                deepLinkSenderAddress = deepLink?.senderAddress,
-                                deepLinkThreshold = deepLink?.threshold,
-                                deepLinkUuid = deepLink?.uuid,
-                                deepLinkTxid = deepLink?.txid,
-                                deepLinkRefundAddress = deepLink?.refundAddress
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ✅ アプリ起動中に deep link が来た場合もここで必ず拾う（Swift版の「受けた瞬間にSharedへ」）
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        if (intent == null) return
-        setIntent(intent)
-        handleIncomingIntent(intent, isFirstLaunch = false)
-    }
-
-    private fun handleIncomingIntent(intent: Intent, isFirstLaunch: Boolean) {
-        val deepLinkUri: Uri? = intent.data
-        val parsed = parseDeepLink(deepLinkUri)
-
-        // extra fallback（端末差対策）
-        val folderIdFromExtra: String? = intent.getStringExtra("folderId")
-        val fileIdFromExtra: String? = intent.getStringExtra("fileId")
-        val senderKeyFromExtra: String? = intent.getStringExtra("senderPublicKey")
-        val recipientEmailFromExtra: String? = intent.getStringExtra("recipientEmail")
-        val senderAddressFromExtra: String? = intent.getStringExtra("senderAddress")
-        val thresholdFromExtra: ULong? = intent.getStringExtra("threshold")?.toULongOrNull()
-        val uuidFromExtra: String? = intent.getStringExtra("uuid")
-        val txidFromExtra: String? = intent.getStringExtra("txid")
-        val refundFromExtra: String? = intent.getStringExtra("refund")
-
-        // 新形式: https://sharefilebcapp.web.app/folder/<ID>
-        val folderIdFromPath: String? = deepLinkUri?.pathSegments?.let { segs ->
-            if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
-        }
-        // 旧形式: https://.../download?folderId=<ID>
-        val folderIdFromQuery: String? = deepLinkUri?.getQueryParameter("folderId")
-
-        val folderId = folderIdFromExtra ?: folderIdFromPath ?: folderIdFromQuery ?: parsed.folderId
-        val fileId = fileIdFromExtra ?: parsed.fileId
-        val senderKey = senderKeyFromExtra ?: parsed.senderPublicKey
-        val recipientEmail = recipientEmailFromExtra ?: parsed.recipientEmail
-        val senderAddress = senderAddressFromExtra ?: parsed.senderAddress
-        val threshold = thresholdFromExtra ?: parsed.threshold
-        val uuid = uuidFromExtra ?: parsed.uuid
-        val txid = txidFromExtra ?: parsed.txid
-        val refund = refundFromExtra ?: parsed.refundAddress
-
-        Log.d(TAG, "🟩 handleIncomingIntent(first=$isFirstLaunch) data=$deepLinkUri")
-        Log.d(TAG, "🟩 picked folderId=$folderId fileId=$fileId uuid=$uuid txid=$txid refund=$refund")
-
-        // ✅ PublicKeyLink は受信した瞬間に登録（従来通り）
+        val deepLinkUri: Uri? = intent?.data
         val pubKeyLink = PublicKeyLinkBuilder.parse(deepLinkUri)
+
+        // 公開鍵リンク（登録）を受け取った場合
         if (pubKeyLink != null) {
             lifecycleScope.launch {
                 val db = AppDatabase.getDatabase(applicationContext)
@@ -185,66 +109,55 @@ class HomeActivity : ComponentActivity() {
                 ).show()
 
                 lifecycleScope.launch(Dispatchers.IO) {
-                    try {
+                    runCatching {
                         val keys = db.emailKeyDao().getAll().first()
                         keys.forEach { key ->
                             Log.d("DEBUG", "Email: ${key.email}")
                             Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
                             Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
                         }
-                    } catch (e: Exception) {
+                    }.onFailure { e ->
                         Log.e("DEBUG", "EmailKeyEntity dump failed", e)
                     }
                 }
             }
         }
 
-        // ✅ ログイン/スコープ確認（従来通り）
+        // ✅ アカウント + Drive スコープをチェック
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
-        val hasDriveScope = account?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
+        val hasDriveScope = account?.let {
+            GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE))
+        } ?: false
+
+        Log.d(
+            TAG,
+            "🟩 SignedIn=${account != null}, DriveScope=$hasDriveScope, displayName=${account?.displayName}"
+        )
 
         if (account == null || !hasDriveScope) {
             Log.d(TAG, "🟧 Need sign-in or Drive scope. Redirecting to LoginActivity...")
+
+            // ✅ DeepLink を LoginActivity に引き継ぐ（ログイン後に HomeActivity に戻る想定）
+            val params = deepLinkParamsState.value
             startActivity(
                 Intent(this, LoginActivity::class.java).apply {
                     deepLinkUri?.let { data = it }
-                    folderId?.let { putExtra("folderId", it) }
-                    fileId?.let { putExtra("fileId", it) }
-                    senderKey?.let { putExtra("senderPublicKey", it) }
-                    recipientEmail?.let { putExtra("recipientEmail", it) }
-                    senderAddress?.let { putExtra("senderAddress", it) }
-                    threshold?.let { putExtra("threshold", it.toString()) }
-                    uuid?.let { putExtra("uuid", it) }
-                    txid?.let { putExtra("txid", it) }
-                    refund?.let { putExtra("refund", it) }
+                    params.folderId?.let { putExtra("folderId", it) }
+                    params.fileId?.let { putExtra("fileId", it) }
+                    params.senderPublicKey?.let { putExtra("senderPublicKey", it) }
+                    params.recipientEmail?.let { putExtra("recipientEmail", it) }
+                    params.senderAddress?.let { putExtra("senderAddress", it) }
+                    params.threshold?.let { putExtra("threshold", it.toString()) }
+                    params.uuid?.let { putExtra("uuid", it) }
+                    params.txid?.let { putExtra("txid", it) }
+                    params.refundAddress?.let { putExtra("refund", it) }
                 }
             )
             finish()
             return
         }
 
-        // ✅ DeepLink判定：folderId/fileId がなくても uuid+txid があれば Sharedへ
-        val isFromDeepLink =
-            (folderId != null || fileId != null) ||
-                    (!uuid.isNullOrBlank() && !txid.isNullOrBlank())
-
-        if (isFromDeepLink) {
-            deepLinkParamsState.value = DeepLinkParams(
-                folderId = folderId,
-                fileId = fileId,
-                senderPublicKey = senderKey,
-                recipientEmail = recipientEmail,
-                senderAddress = senderAddress,
-                threshold = threshold,
-                uuid = uuid,
-                txid = txid,
-                refundAddress = refund
-            )
-            // ✅ Swift版と同じ：受信した瞬間に Shared タブへ
-            selectedTabState.value = BottomTab.Shared
-        }
-
-        // --- 初期トークン配布申請（従来通り） ---
+        // --- 初期トークン配布申請 ---
         account.email?.let { email ->
             lifecycleScope.launch {
                 runCatching {
@@ -271,7 +184,7 @@ class HomeActivity : ComponentActivity() {
             }
         }
 
-        // --- 公開鍵レジストリ登録（従来通り） ---
+        // --- 公開鍵レジストリ登録（自分） ---
         account.email?.let { email ->
             lifecycleScope.launch {
                 runCatching {
@@ -292,6 +205,57 @@ class HomeActivity : ComponentActivity() {
                 }
             }
         }
+
+        setContent {
+            ShareFileBCTheme {
+                var selectedTab by selectedTabState
+                val deepLinkParams by deepLinkParamsState
+
+                Scaffold(
+                    bottomBar = {
+                        BottomNavigationBar(
+                            selectedTab = selectedTab,
+                            onTabSelected = { selectedTab = it }
+                        )
+                    }
+                ) { innerPadding ->
+                    when (selectedTab) {
+                        BottomTab.Home -> {
+                            HomeScreen(
+                                modifier = Modifier.padding(innerPadding),
+                            )
+                        }
+
+                        BottomTab.Shared -> {
+                            // ✅ DeepLink の入力は SharedScreen に渡すだけ
+                            SharedScreen(
+                                modifier = Modifier.padding(innerPadding),
+                                initialFolderId = deepLinkParams.folderId,
+                                initialFileId = deepLinkParams.fileId,
+                                deepLinkSenderPublicKey = deepLinkParams.senderPublicKey,
+                                deepLinkRecipientEmail = deepLinkParams.recipientEmail,
+                                deepLinkSenderAddress = deepLinkParams.senderAddress,
+                                deepLinkThreshold = deepLinkParams.threshold,
+                                deepLinkUuid = deepLinkParams.uuid,
+                                deepLinkTxid = deepLinkParams.txid,
+                                deepLinkRefundAddress = deepLinkParams.refundAddress
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * ✅ 起動済みアプリに deep link が来たときは onNewIntent で来る
+     * - state を更新して Shared タブへ切替
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        logDeepLinkIntent("onNewIntent", intent)
+        applyDeepLinkIfAny(intent)
     }
 
     @Deprecated("Activity Result API への移行推奨だが互換のため残置")
@@ -300,51 +264,108 @@ class HomeActivity : ComponentActivity() {
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
     }
 
-    private fun parseDeepLink(uri: Uri?): DeepLinkParams {
+    private fun applyDeepLinkIfAny(intent: Intent?) {
+        val uri = intent?.data
+        val paramsFromUri = parseDeepLink(uri)
+
+        // ✅ OS差/端末差で intent.data が欠落するケース対策：extra も併用
+        val paramsFromExtra = DeepLinkParams(
+            folderId = intent?.getStringExtra("folderId"),
+            fileId = intent?.getStringExtra("fileId"),
+            senderPublicKey = intent?.getStringExtra("senderPublicKey"),
+            recipientEmail = intent?.getStringExtra("recipientEmail"),
+            senderAddress = intent?.getStringExtra("senderAddress"),
+            threshold = intent?.getStringExtra("threshold")?.toULongOrNull(),
+            uuid = intent?.getStringExtra("uuid"),
+            txid = intent?.getStringExtra("txid"),
+            refundAddress = intent?.getStringExtra("refund"),
+        )
+
+        val merged = DeepLinkParams(
+            folderId = paramsFromExtra.folderId ?: paramsFromUri.folderId,
+            fileId = paramsFromExtra.fileId ?: paramsFromUri.fileId,
+            senderPublicKey = paramsFromExtra.senderPublicKey ?: paramsFromUri.senderPublicKey,
+            recipientEmail = paramsFromExtra.recipientEmail ?: paramsFromUri.recipientEmail,
+            senderAddress = paramsFromExtra.senderAddress ?: paramsFromUri.senderAddress,
+            threshold = paramsFromExtra.threshold ?: paramsFromUri.threshold,
+            uuid = paramsFromExtra.uuid ?: paramsFromUri.uuid,
+            txid = paramsFromExtra.txid ?: paramsFromUri.txid,
+            refundAddress = paramsFromExtra.refundAddress ?: paramsFromUri.refundAddress,
+        )
+
+        val isFromDeepLink =
+            (merged.folderId != null || merged.fileId != null) ||
+                    (!merged.uuid.isNullOrBlank() && !merged.txid.isNullOrBlank())
+
+        deepLinkParamsState.value = merged
+
+        if (isFromDeepLink) {
+            // ✅ Swift版に合わせる：DeepLink受信時点で Shared に切替
+            selectedTabState.value = BottomTab.Shared
+        }
+
+        Log.d(TAG, "🟩 applyDeepLinkIfAny uri=$uri -> $merged, switchToShared=$isFromDeepLink")
+    }
+
+    private fun logDeepLinkIntent(where: String, intent: Intent?) {
+        val uri = intent?.data
+        Log.d(DL_TAG, "---- $where ----")
+        Log.d(DL_TAG, "intent.action=${intent?.action}")
+        Log.d(DL_TAG, "intent.categories=${intent?.categories}")
+        Log.d(DL_TAG, "intent.data=$uri")
         if (uri == null) {
-            return DeepLinkParams(
-                folderId = null,
-                fileId = null,
-                senderPublicKey = null,
-                recipientEmail = null,
-                senderAddress = null,
-                threshold = null,
-                uuid = null,
-                txid = null,
-                refundAddress = null
-            )
+            Log.d(DL_TAG, "data=null (intent.data is null)")
+            return
+        }
+        Log.d(DL_TAG, "scheme=${uri.scheme} host=${uri.host} path=${uri.path}")
+        Log.d(DL_TAG, "segments=${uri.pathSegments}")
+        Log.d(DL_TAG, "query=${uri.query}")
+        Log.d(DL_TAG, "fragment=${uri.fragment}")
+        runCatching {
+            val names = uri.queryParameterNames
+            Log.d(DL_TAG, "queryNames=$names")
+        }.onFailure { e ->
+            Log.e(DL_TAG, "queryParameterNames dump failed", e)
+        }
+    }
+
+    private fun parseDeepLink(uri: Uri?): DeepLinkParams {
+        if (uri == null) return DeepLinkParams()
+
+        // 新形式: https://sharefilebcapp.web.app/folder/<ID>
+        val folderIdFromPath: String? = uri.pathSegments?.let { segs ->
+            if (segs.size >= 2 && segs[0] == "folder") segs[1] else null
         }
 
-        val segments = uri.pathSegments.orEmpty()
-        val isSharePath = segments.firstOrNull() == "share"
-        val isFilePath = segments.firstOrNull() == "file"
+        // 旧形式: https://.../download?folderId=<ID>
+        val folderIdFromQuery: String? = uri.getQueryParameter("folderId")
 
-        val fileIdFromPath = when {
-            isSharePath && segments.size >= 2 -> segments[1]
-            isFilePath && segments.size >= 2 -> segments[1]
-            else -> null
+        // fileId: https://.../file/<ID> または query
+        val fileIdFromPath: String? = uri.pathSegments?.let { segs ->
+            if (segs.size >= 2 && (segs[0] == "file" || segs[0] == "share")) segs[1] else null
         }
+        val fileIdFromQuery: String? = uri.getQueryParameter("fileId")
 
-        val sender = uri.getQueryParameter("sender")
-        val to = uri.getQueryParameter("to")
-        val fileIdFromQuery = uri.getQueryParameter("fileId")
+        // 支払い・検証系
+        val senderKey = uri.getQueryParameter("sender")
+        val recipientEmail = uri.getQueryParameter("to")
         val senderAddress = uri.getQueryParameter("senderAddress")
         val threshold = uri.getQueryParameter("threshold")?.toULongOrNull()
 
         val uuid = uri.getQueryParameter("uuid")
         val txid = uri.getQueryParameter("txid")
-        val refundAddress = uri.getQueryParameter("refund")
+        val refund = uri.getQueryParameter("refund")
 
         return DeepLinkParams(
-            folderId = uri.getQueryParameter("folderId"),
+            folderId = folderIdFromPath ?: folderIdFromQuery,
             fileId = fileIdFromQuery ?: fileIdFromPath,
-            senderPublicKey = sender,
-            recipientEmail = to,
+            senderPublicKey = senderKey,
+            recipientEmail = recipientEmail,
             senderAddress = senderAddress,
             threshold = threshold,
             uuid = uuid,
             txid = txid,
-            refundAddress = refundAddress
+            refundAddress = refund
         )
     }
 }

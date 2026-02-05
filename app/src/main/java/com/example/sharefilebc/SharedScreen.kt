@@ -1,3 +1,4 @@
+// SharedScreen.kt
 package com.example.sharefilebc
 
 import android.util.Log
@@ -17,8 +18,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import com.example.sharefilebc.ui.theme.SharedScreenDimens
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
@@ -38,7 +42,7 @@ fun SharedScreen(
     deepLinkTxid: String? = null,
     deepLinkRefundAddress: String? = null,
 ) {
-    // ✅ folderId/fileId がなくても uuid/txid があれば「受信」タブ開始にする
+    // ✅ folderId/fileId がなくても uuid/txid があれば「受信」タブ開始
     val shouldOpenReceived =
         (initialFolderId != null || initialFileId != null) ||
                 (!deepLinkUuid.isNullOrBlank() && !deepLinkTxid.isNullOrBlank())
@@ -49,39 +53,53 @@ fun SharedScreen(
 
     val context = LocalContext.current
 
-    // ✅ Compose再描画対策（メモリ内ガード）
-    // ※プロセス死後の多重は ShareProcessor 側の idempotent 化で吸収する
+    // ✅ 多重実行ガード（メモリ内 + DB存在チェック）
     val processedMap = remember { mutableStateMapOf<String, Boolean>() }
 
-    // ✅ Swift版思想：DeepLinkを受けたら Shared側で即処理（UI表示とは独立して1回だけ）
     LaunchedEffect(
+        selectedTab,
         deepLinkUuid,
         deepLinkTxid,
         deepLinkSenderPublicKey,
         deepLinkThreshold,
         deepLinkRefundAddress
     ) {
+        if (selectedTab != SharedInnerTab.Received) return@LaunchedEffect
+
         val uuid = deepLinkUuid
         val txid = deepLinkTxid
         val senderKey = deepLinkSenderPublicKey
         val threshold = deepLinkThreshold
 
-        // deep link が揃ってないなら何もしない
         if (uuid.isNullOrBlank() || txid.isNullOrBlank() || senderKey.isNullOrBlank() || threshold == null) {
             return@LaunchedEffect
         }
 
         val key = "$uuid|$txid"
+
+        // ① メモリ内ガード（再描画・タブ切替）
         if (processedMap[key] == true) {
-            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already launched in this session) key=$key")
+            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already processed in-memory) key=$key")
             return@LaunchedEffect
         }
 
-        processedMap[key] = true
+        // ② DBガード（アプリ再起動・リンク再オープン）
+        val alreadyProcessedInDb = withContext(Dispatchers.IO) {
+            val db = AppDatabase.getDatabase(context)
+            db.receivedFileDao().findByShareId(uuid) != null
+        }
+        if (alreadyProcessedInDb) {
+            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already processed in-DB) key=$key")
+            processedMap[key] = true
+            return@LaunchedEffect
+        }
 
-        Log.d("SharedScreen", "🔍 processReceivedShare start uuid=$uuid txid=${txid.take(8)}... threshold=$threshold")
+        Log.d(
+            "SharedScreen",
+            "🔍 processReceivedShare start uuid=$uuid txid=${txid.take(8)}... threshold=$threshold"
+        )
 
-        runCatching {
+        val result = runCatching {
             ShareProcessor.processReceivedShare(
                 context = context,
                 uuid = uuid,
@@ -91,11 +109,13 @@ fun SharedScreen(
                 threshold = threshold,
                 colorId = Constants.Strings.tokenColorId
             )
-        }.onSuccess { result ->
-            Log.d("SharedScreen", "✅ processReceivedShare result=$result uuid=$uuid txid=${txid.take(8)}...")
         }.onFailure {
             Log.e("SharedScreen", "❌ processReceivedShare failed", it)
-        }
+        }.getOrNull()
+
+        Log.d("SharedScreen", "✅ processReceivedShare result=$result uuid=$uuid txid=${txid.take(8)}...")
+
+        processedMap[key] = true
     }
 
     Column(
@@ -137,18 +157,17 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    // ✅ DownloadScreen は表示専用に戻す
-                    // deep link パラメータは渡さない（入口をSharedに一本化）
+                    // ✅ DownloadScreen は「表示専用」。deep link 情報は渡してもいいが処理しない。
                     DownloadScreen(
                         initialFolderId = initialFolderId,
                         initialFileId = initialFileId,
-                        deepLinkSenderPublicKey = null,
-                        deepLinkRecipientEmail = null,
-                        deepLinkSenderAddress = null,
-                        deepLinkThreshold = null,
-                        deepLinkUuid = null,
-                        deepLinkTxid = null,
-                        deepLinkRefundAddress = null,
+                        deepLinkSenderPublicKey = deepLinkSenderPublicKey,
+                        deepLinkRecipientEmail = deepLinkRecipientEmail,
+                        deepLinkSenderAddress = deepLinkSenderAddress,
+                        deepLinkThreshold = deepLinkThreshold,
+                        deepLinkUuid = deepLinkUuid,
+                        deepLinkTxid = deepLinkTxid,
+                        deepLinkRefundAddress = deepLinkRefundAddress,
                     )
                 }
             }

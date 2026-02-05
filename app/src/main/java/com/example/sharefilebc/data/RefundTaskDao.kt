@@ -1,9 +1,11 @@
+// RefundTaskDao.kt
 package com.example.sharefilebc.data
 
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface RefundTaskDao {
@@ -12,6 +14,10 @@ interface RefundTaskDao {
 
     @Query("SELECT * FROM refund_tasks")
     suspend fun getAll(): List<RefundTaskEntity>
+
+    // ✅ UI表示用（返金待ち表示など）
+    @Query("SELECT * FROM refund_tasks ORDER BY id DESC")
+    fun observeAll(): Flow<List<RefundTaskEntity>>
 
     /**
      * ShareProcessor.refundShare で使用
