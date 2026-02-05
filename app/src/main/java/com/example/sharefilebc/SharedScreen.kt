@@ -1,51 +1,30 @@
 package com.example.sharefilebc
 
+import android.util.Log
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import com.example.sharefilebc.ui.theme.SharedScreenDimens
 
-// 送信・受信 のタブ
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
     Received("受信");
 }
 
-/**
- * 共有タブ全体の画面。
- *
- * - initialFolderId / initialFileId / deepLinkSenderPublicKey / deepLinkRecipientEmail は
- *   Deep Link で開かれたときだけ埋まる想定なので、すべて null 許容 & デフォルト null にしておく。
- * - 既存の呼び出しコードは SharedScreen() / SharedScreen(initialFolderId = ...) だけでもOK。
- */
 @Composable
 fun SharedScreen(
     modifier: Modifier = Modifier,
@@ -55,16 +34,68 @@ fun SharedScreen(
     deepLinkRecipientEmail: String? = null,
     deepLinkSenderAddress: String? = null,
     deepLinkThreshold: ULong? = null,
+    deepLinkUuid: String? = null,
+    deepLinkTxid: String? = null,
+    deepLinkRefundAddress: String? = null,
 ) {
-    // DeepLink でフォルダ or ファイル指定があれば「受信」タブから開始
-    var selectedTab by remember(initialFolderId, initialFileId) {
-        mutableStateOf(
-            if (initialFolderId != null || initialFileId != null) {
-                SharedInnerTab.Received
-            } else {
-                SharedInnerTab.Sent
-            }
-        )
+    // ✅ folderId/fileId がなくても uuid/txid があれば「受信」タブ開始にする
+    val shouldOpenReceived =
+        (initialFolderId != null || initialFileId != null) ||
+                (!deepLinkUuid.isNullOrBlank() && !deepLinkTxid.isNullOrBlank())
+
+    var selectedTab by remember(initialFolderId, initialFileId, deepLinkUuid, deepLinkTxid) {
+        mutableStateOf(if (shouldOpenReceived) SharedInnerTab.Received else SharedInnerTab.Sent)
+    }
+
+    val context = LocalContext.current
+
+    // ✅ Compose再描画対策（メモリ内ガード）
+    // ※プロセス死後の多重は ShareProcessor 側の idempotent 化で吸収する
+    val processedMap = remember { mutableStateMapOf<String, Boolean>() }
+
+    // ✅ Swift版思想：DeepLinkを受けたら Shared側で即処理（UI表示とは独立して1回だけ）
+    LaunchedEffect(
+        deepLinkUuid,
+        deepLinkTxid,
+        deepLinkSenderPublicKey,
+        deepLinkThreshold,
+        deepLinkRefundAddress
+    ) {
+        val uuid = deepLinkUuid
+        val txid = deepLinkTxid
+        val senderKey = deepLinkSenderPublicKey
+        val threshold = deepLinkThreshold
+
+        // deep link が揃ってないなら何もしない
+        if (uuid.isNullOrBlank() || txid.isNullOrBlank() || senderKey.isNullOrBlank() || threshold == null) {
+            return@LaunchedEffect
+        }
+
+        val key = "$uuid|$txid"
+        if (processedMap[key] == true) {
+            Log.d("SharedScreen", "⏭️ skip processReceivedShare (already launched in this session) key=$key")
+            return@LaunchedEffect
+        }
+
+        processedMap[key] = true
+
+        Log.d("SharedScreen", "🔍 processReceivedShare start uuid=$uuid txid=${txid.take(8)}... threshold=$threshold")
+
+        runCatching {
+            ShareProcessor.processReceivedShare(
+                context = context,
+                uuid = uuid,
+                txids = listOf(txid),
+                senderPublicKey = senderKey,
+                refundAddress = deepLinkRefundAddress,
+                threshold = threshold,
+                colorId = Constants.Strings.tokenColorId
+            )
+        }.onSuccess { result ->
+            Log.d("SharedScreen", "✅ processReceivedShare result=$result uuid=$uuid txid=${txid.take(8)}...")
+        }.onFailure {
+            Log.e("SharedScreen", "❌ processReceivedShare failed", it)
+        }
     }
 
     Column(
@@ -96,10 +127,7 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    // 送信済みファイル一覧（既存の Composable をそのまま呼ぶ）
-                    SentFilesScreen(
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    SentFilesScreen(modifier = Modifier.fillMaxSize())
                 }
             }
 
@@ -109,17 +137,18 @@ fun SharedScreen(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    // 受信タブでは、DeepLink から渡ってきた情報を DownloadScreen に渡す想定。
-                    // いまは initialFolderId だけを使っている既存実装があるので、
-                    // それを壊さないように initialFolderId だけ渡しておく。
+                    // ✅ DownloadScreen は表示専用に戻す
+                    // deep link パラメータは渡さない（入口をSharedに一本化）
                     DownloadScreen(
                         initialFolderId = initialFolderId,
-                        // DeepLink 関連の引数は、DownloadScreen 側で対応したタイミングで使う前提。
                         initialFileId = initialFileId,
-                        deepLinkSenderPublicKey = deepLinkSenderPublicKey,
-                        deepLinkRecipientEmail = deepLinkRecipientEmail,
-                        deepLinkSenderAddress = deepLinkSenderAddress,
-                        deepLinkThreshold = deepLinkThreshold,
+                        deepLinkSenderPublicKey = null,
+                        deepLinkRecipientEmail = null,
+                        deepLinkSenderAddress = null,
+                        deepLinkThreshold = null,
+                        deepLinkUuid = null,
+                        deepLinkTxid = null,
+                        deepLinkRefundAddress = null,
                     )
                 }
             }
@@ -158,7 +187,6 @@ private fun SharedTabSelector(
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
-                // 背景のインジケータ
                 Box(
                     modifier = Modifier
                         .offset(x = animatedOffset)
@@ -181,9 +209,7 @@ private fun SharedTabSelector(
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
-                                ) {
-                                    onSelected(tab)
-                                }
+                                ) { onSelected(tab) }
                                 .padding(vertical = 6.dp),
                             contentAlignment = Alignment.Center
                         ) {

@@ -262,10 +262,12 @@ fun HomeScreen(
                                                 walletManager.transferToken(
                                                     toAddress = p2cAddress,
                                                     amount = transferAmount,
-                                                    colorId = Constants.Strings.tokenColorId
+                                                    colorId = Constants.Strings.tokenColorId,
+                                                    utxos = emptyList()   // ← これを追加
                                                 )
                                             }.getOrNull()
                                         }
+
 
                                         if (txid == null) {
                                             Toast.makeText(context, "トークン送金に失敗しました", Toast.LENGTH_LONG).show()

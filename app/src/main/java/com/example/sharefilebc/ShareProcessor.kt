@@ -103,7 +103,7 @@ object ShareProcessor {
                     paymentBase = myPublicKey,
                     payable = true
                 )
-                walletManager.storeContract(contract)
+                storeContractIdempotent(walletManager, contract)
 
                 // ReceivedFileEntity更新（ダウンロード不可）
                 updateReceivedFile(
@@ -120,6 +120,9 @@ object ShareProcessor {
                     registerFraudulentSender(context, senderPublicKey, "Payment below threshold")
                 }
 
+                // ウォレット同期（Swift版と同様：受信後は即sync）
+                walletManager.sync()
+
                 return@withContext ShareProcessResult.BelowThreshold(totalAmount, threshold)
             }
 
@@ -133,7 +136,7 @@ object ShareProcessor {
                 paymentBase = myPublicKey,
                 payable = false
             )
-            walletManager.storeContract(contract)
+            storeContractIdempotent(walletManager, contract)
 
             // ReceivedFileEntity更新（ダウンロード可能）
             updateReceivedFile(
@@ -166,6 +169,26 @@ object ShareProcessor {
         } catch (e: Exception) {
             Log.e(TAG, "❌ processReceivedShare failed", e)
             return@withContext ShareProcessResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * ✅ 多重実行・再入に強くする：既に存在するContractなら成功扱いにする
+     * これで "contract already exists" が出ても事故らない（Swift版の idempotent 的動き）
+     */
+    private fun storeContractIdempotent(walletManager: WalletManager, contract: Contract) {
+        runCatching {
+            walletManager.storeContract(contract)
+            Log.d(TAG, "✅ storeContract OK: contractId=${contract.contractId}")
+        }.onFailure { e ->
+            val msg = e.message.orEmpty()
+            val isAlready = msg.contains("already exists", ignoreCase = true)
+            if (isAlready) {
+                Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
+            } else {
+                // ここは上位で落とす
+                throw e
+            }
         }
     }
 

@@ -88,6 +88,9 @@ fun DownloadScreen(
     deepLinkRecipientEmail: String?,
     deepLinkSenderAddress: String?,
     deepLinkThreshold: ULong?,
+    deepLinkUuid: String? = null,
+    deepLinkTxid: String? = null,
+    deepLinkRefundAddress: String? = null,
 ) {
     val context = LocalContext.current
     val downloader = remember { DriveDownloader(context) }
@@ -301,7 +304,7 @@ fun DownloadScreen(
                     val paidAmount = threshold
                     val txid = walletManager.transfer(senderAddress, paidAmount)
                     walletManager.sync()
-                    val balance = walletManager.getBalance(colorId = Constants.Strings.tokenColorId)
+                    val balance = walletManager.getBalance()
                     walletSettingsManager.setLastKnownBalance(balance)
 
                     val result = if (paidAmount >= threshold) "PAID" else "UNDERPAID"

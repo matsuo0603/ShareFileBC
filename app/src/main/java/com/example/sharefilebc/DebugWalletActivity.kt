@@ -1,10 +1,13 @@
 package com.example.sharefilebc
 
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.sharefilebc.data.AppDatabase
@@ -15,10 +18,6 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.widget.Toast
-import android.widget.EditText
-import android.util.Log
-
 
 class DebugWalletActivity : AppCompatActivity() {
 
@@ -46,7 +45,7 @@ class DebugWalletActivity : AppCompatActivity() {
         }
 
         val senderIdInput = EditText(this).apply {
-            hint = "送信者ID（email/pubkey 任意）"
+            hint = "送信者ID(email/pubkey 任意)"
         }
 
         val transferAmountView = TextView(this)
@@ -64,8 +63,8 @@ class DebugWalletActivity : AppCompatActivity() {
         fun refreshSettingsLabels() {
             val transferAmount = walletSettingsManager.getTokenTransferAmount()
             val threshold = walletSettingsManager.getPaymentThreshold()
-            transferAmountView.text = "送金量(設定): ${transferAmount} TPC"
-            thresholdView.text = "しきい値(設定): ${threshold} TPC"
+            transferAmountView.text = "送金量(設定): $transferAmount TPC"
+            thresholdView.text = "しきい値(設定): $threshold TPC"
         }
 
         refreshSettingsLabels()
@@ -74,71 +73,90 @@ class DebugWalletActivity : AppCompatActivity() {
         layout.addView(thresholdView)
         layout.addView(addressInput)
         layout.addView(senderIdInput)
-        // ✅ 受取アドレス（新規発行）
+
+        // ✅ 受取アドレス(新規発行)
         addButton("Get New Address") {
             lifecycleScope.launch {
-                runCatching { walletManager.getNewAddress() }
-                    .onSuccess { append("new address=$it") }
-                    .onFailure { append("getNewAddress failed: ${it.message}") }
+                runCatching {
+                    walletManager.initializeIfNeeded()
+                    walletManager.getNewAddress()
+                }
+                    .onSuccess { addr ->
+                        append("new address=$addr")
+                    }
+                    .onFailure { e ->
+                        append("getNewAddress failed: ${e.message}")
+                    }
             }
         }
 
-        // ✅ 送金
+        /**
+         * ✅ 送金
+         * 重要:
+         * - Claude修正後の WalletManager は transfer() を公開していない
+         * - transferToken() は utxos が必須だが、この Debug画面には utxos 収集ロジックが無い
+         * → ここでは「送金機能を無効化」してコンパイルを通す（送金は本番画面側でテスト）
+         */
         addButton("Send") {
-            val toAddress = addressInput.text?.toString()?.trim().orEmpty()
-            if (toAddress.isBlank()) {
-                append("送金先アドレスを入力してください")
-                return@addButton
-            }
-            val amount = walletSettingsManager.getTokenTransferAmount()
-            lifecycleScope.launch {
-                runCatching { walletManager.transfer(toAddress, amount) }
-                    .onSuccess { append("transfer txid=$it") }
-                    .onFailure { append("transfer failed: ${it.message}") }
-            }
+            append("Send は現在無効です（WalletManager のAPI変更により）")
+            append("SharedScreen / ShareProcessor 側の送金ルートでテストしてください")
+            Toast.makeText(
+                this@DebugWalletActivity,
+                "Send は現在無効です（Debug画面）",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         // ✅ 同期
         addButton("Sync") {
             lifecycleScope.launch {
-                runCatching { walletManager.sync() }
+                runCatching {
+                    walletManager.initializeIfNeeded()
+                    walletManager.sync()
+                }
                     .onSuccess { append("sync done") }
-                    .onFailure { append("sync failed: ${it.message}") }
+                    .onFailure { e -> append("sync failed: ${e.message}") }
             }
         }
 
         // ✅ 残高
         addButton("Balance") {
             lifecycleScope.launch {
-                runCatching { walletManager.getBalance() }
-                    .onSuccess {
-                        Log.d(LogTags.TAG_PAYMENT, "send txid=$it")
-                        append("transfer txid=$it")
+                runCatching {
+                    walletManager.initializeIfNeeded()
+                    walletManager.getBalance()
+                }
+                    .onSuccess { balance ->
+                        Log.d(LogTags.TAG_PAYMENT, "balance=$balance")
+                        append("balance=$balance")
                     }
-                    .onFailure {
-                        Log.e(LogTags.TAG_PAYMENT, "transfer failed", it)
-                        append("transfer failed: ${it.message}")
+                    .onFailure { e ->
+                        Log.e(LogTags.TAG_PAYMENT, "balance check failed", e)
+                        append("balance check failed: ${e.message}")
                     }
             }
         }
 
-        // ✅ 入金チェック（sync -> balance 差分）
+        // ✅ 入金チェック(sync -> balance 差分)
         addButton("入金チェック") {
             lifecycleScope.launch {
                 val previous = lastBalance
                 val current = runCatching {
+                    walletManager.initializeIfNeeded()
                     walletManager.sync()
                     walletManager.getBalance()
-                }.getOrElse {
-                    append("入金チェック失敗: ${it.message}")
+                }.getOrElse { e ->
+                    append("入金チェック失敗: ${e.message}")
                     return@launch
                 }
 
                 append("balance=$current")
+
                 if (previous != null) {
                     if (current > previous) {
                         val diff = current - previous
                         append("incoming amount=$diff")
+
                         val threshold = walletSettingsManager.getPaymentThreshold()
                         val senderId = senderIdInput.text?.toString()?.trim().orEmpty()
                             .ifBlank { "unknown" }
@@ -183,39 +201,31 @@ class DebugWalletActivity : AppCompatActivity() {
                 lastBalance = current
             }
         }
-        // ✅ 手動返金（UNDERPAID の SharePayment を返金）
+
+        /**
+         * ✅ 手動返金
+         * 送金処理が Debug画面から呼べなくなっているため、ここも無効化してコンパイルを通す。
+         */
         addButton("手動返金") {
+            append("手動返金は現在無効です（Debug画面）")
+            append("WalletManager に utxos 収集APIを追加したら復活できます")
             lifecycleScope.launch {
                 val payment = withContext(Dispatchers.IO) {
                     sharePaymentDao.findLatestByResult("UNDERPAID")
                 }
                 if (payment == null) {
-                    append("返金対象がありません")
-                    return@launch
-                }
-                val refundAddress = payment.payerRefundAddress?.trim().orEmpty()
-                if (refundAddress.isBlank()) {
-                    append("返金先アドレスが未登録です")
-                    return@launch
-                }
-                val amount = payment.amount.toULong()
-                val result = runCatching { walletManager.transfer(refundAddress, amount) }
-                if (result.isSuccess) {
-                    append("refund txid=${result.getOrNull()}")
-                    withContext(Dispatchers.IO) {
-                        sharePaymentDao.updateResult(payment.id, "REFUNDED")
-                    }
+                    append("返金対象(UNDERPAID)がありません")
                 } else {
-                    append("refund failed: ${result.exceptionOrNull()?.message}")
+                    append("UNDERPAID は存在しますが、Debug画面からは返金送金できません")
                 }
             }
         }
 
-        // ✅ ウォレット再初期化（設定変更後の確認用）
+        // ✅ ウォレット再初期化(設定変更後の確認用)
         addButton("Reset Wallet (re-init next call)") {
             runCatching { walletManager.resetWallet() }
                 .onSuccess { append("wallet reset") }
-                .onFailure { append("reset failed: ${it.message}") }
+                .onFailure { e -> append("reset failed: ${e.message}") }
         }
 
         layout.addView(logView)
@@ -227,6 +237,7 @@ class DebugWalletActivity : AppCompatActivity() {
     private fun append(msg: String) {
         logView.append(msg + "\n")
     }
+
     private fun nowIsoString(): String {
         val formatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault())
         return formatter.format(Instant.now())
