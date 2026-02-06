@@ -9,23 +9,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/**
- * Swift版の「イベント駆動・即反映」に寄せるための同期処理本体。
- *
- * - sharedWithMe に存在する pubkey.json を検索
- * - 中身を解析して EmailKeyEntity に upsert
- *
- * WorkManager(Periodic) と UIイベント(ログイン直後/画面表示) の両方から同じ処理を呼べるように、
- * Worker からロジックを分離した。
- */
 object PublicKeySyncer {
 
     private const val TAG = "PublicKeySyncer"
 
-    /**
-     * 公開鍵を 1 回同期する。
-     * @return DB upsert 件数
-     */
+    private data class Candidate(
+        val email: String,
+        val derived: String,
+        val trustLayer: String,
+        val folderId: String,
+        val timeMillis: Long,
+        val fileId: String
+    )
+
     suspend fun syncOnce(context: Context): Int = withContext(Dispatchers.IO) {
         Log.d(TAG, "▶ syncOnce start")
 
@@ -36,15 +32,17 @@ object PublicKeySyncer {
         val db = AppDatabase.getDatabase(context)
         val emailKeyDao = db.emailKeyDao()
 
+        // ✅ modifiedTime/createdTime を取得して “最新” を選ぶ
         val list = drive.files().list()
             .setQ("name='pubkey.json' and sharedWithMe and trashed=false")
-            .setFields("files(id, name, parents, owners(emailAddress))")
+            .setFields("files(id, name, parents, owners(emailAddress), modifiedTime, createdTime)")
             .execute()
 
         val files = list.files ?: emptyList()
         Log.d(TAG, "🔍 pubkey.json 検索結果: ${files.size} 件")
 
-        var upsertCount = 0
+        val bestByEmail = mutableMapOf<String, Candidate>()
+
         for (file in files) {
             val content = drive.files().get(file.id)
                 .executeMediaAsInputStream()
@@ -58,7 +56,8 @@ object PublicKeySyncer {
 
             val ownerEmail = json.optString("ownerEmail")
                 .ifBlank { file.owners?.firstOrNull()?.emailAddress.orEmpty() }
-                .ifBlank { "" }
+                .trim()
+
             if (ownerEmail.isBlank()) {
                 Log.w(TAG, "⚠️ ownerEmail 不明: ${file.id}")
                 continue
@@ -66,34 +65,65 @@ object PublicKeySyncer {
 
             val derived = json.optString("senderDerivedPublicKeyHex")
                 .ifBlank { json.optString("derivedPublicKey") }
+                .trim()
+
             val trustLayer = json.optString("trustLayerPublicKey")
-                // 旧フィールド互換（Swift側/既存データとの整合のため）
                 .ifBlank { json.optString("senderMasterPublicKeyHex") }
+                .trim()
 
             if (derived.isBlank() || trustLayer.isBlank()) {
-                Log.w(TAG, "⚠️ 公開鍵が不足: email=$ownerEmail")
+                Log.w(TAG, "⚠️ 公開鍵が不足: email=$ownerEmail fileId=${file.id}")
                 continue
             }
 
             val folderId = file.parents?.firstOrNull().orEmpty()
-            val existing = emailKeyDao.findByEmail(ownerEmail)
+            val timeMillis = file.modifiedTime?.value
+                ?: file.createdTime?.value
+                ?: 0L
+
+            val cand = Candidate(
+                email = ownerEmail,
+                derived = derived,
+                trustLayer = trustLayer,
+                folderId = folderId,
+                timeMillis = timeMillis,
+                fileId = file.id
+            )
+
+            val prev = bestByEmail[ownerEmail]
+            if (prev == null || cand.timeMillis > prev.timeMillis) {
+                bestByEmail[ownerEmail] = cand
+            }
+        }
+
+        var upsertCount = 0
+        for ((email, cand) in bestByEmail) {
+            val existing = emailKeyDao.findByEmail(email)
+
             val current = existing?.let {
-                it.derivedPublicKey == derived &&
-                        it.trustLayerPublicKey == trustLayer &&
-                        it.folderIDFromPartner == folderId
+                it.derivedPublicKey.trim() == cand.derived &&
+                        it.trustLayerPublicKey.trim() == cand.trustLayer &&
+                        it.folderIDFromPartner == cand.folderId
             } ?: false
 
             if (!current) {
                 emailKeyDao.upsert(
                     EmailKeyEntity(
-                        email = ownerEmail,
-                        derivedPublicKey = derived,
-                        trustLayerPublicKey = trustLayer,
-                        folderIDFromPartner = folderId,
+                        email = cand.email,
+                        derivedPublicKey = cand.derived,
+                        trustLayerPublicKey = cand.trustLayer,
+                        folderIDFromPartner = cand.folderId,
                         isRefundRejected = existing?.isRefundRejected ?: false
                     )
                 )
-                upsertCount += 1
+                upsertCount++
+
+                Log.d(
+                    TAG,
+                    "✅ upsert: email=$email derived=${cand.derived.take(16)}... time=${cand.timeMillis} fileId=${cand.fileId}"
+                )
+            } else {
+                Log.d(TAG, "↩ skip(current): email=$email")
             }
         }
 

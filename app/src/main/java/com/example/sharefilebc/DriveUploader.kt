@@ -4,25 +4,27 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import com.example.sharefilebc.crypto.SecurePackage
 import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.data.EmailKeyEntity
+import com.example.sharefilebc.data.MyPublicKeyEntity
 import com.example.sharefilebc.data.SharedFolderEntity
+import com.example.sharefilebc.data.UserEntity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
-import com.example.sharefilebc.data.EmailKeyEntity
 import com.google.api.services.drive.Drive
-import com.google.api.services.drive.model.File
 import com.google.api.services.drive.DriveScopes
+import com.google.api.services.drive.model.File
 import com.google.api.services.drive.model.Permission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.text.SimpleDateFormat
-import java.util.*
-import com.example.sharefilebc.data.UserEntity
-import com.example.sharefilebc.crypto.SecurePackage
-import com.example.sharefilebc.data.MyPublicKeyEntity
+import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 
 sealed class UploadResult {
     data class Success(val fileName: String, val fileId: String, val folderId: String) : UploadResult()
@@ -31,6 +33,7 @@ sealed class UploadResult {
 }
 
 class DriveUploader(private val context: Context) {
+
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
         val credential = GoogleAccountCredential.usingOAuth2(
@@ -78,64 +81,67 @@ class DriveUploader(private val context: Context) {
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
 
                 val wallet = KeyDerivation.getInstance(context)
-                val (trustLayerPublicKey, derivedPublicKey) = resolveMyKeys(db, wallet)
+                resolveMyKeys(db, wallet) // DBに自分の鍵を保存・更新
 
-                val recipientPublicKeyHex = recipientKey.derivedPublicKey.takeIf { it.isNotBlank() }
+                // ✅ 重要：送信直前にDBから相手鍵を取り直す（Swift版寄せ）
+                val emailKeyDao = db.emailKeyDao()
+                val latestFromDb = runCatching { emailKeyDao.findByEmail(recipient.email) }.getOrNull()
+                val effectiveKey = latestFromDb ?: recipientKey
 
-                if (recipientPublicKeyHex == null) {
+                if (latestFromDb == null) {
+                    Log.w("DriveUploader", "⚠️ recipient key not found in DB. fallback to passed key. email=${recipient.email}")
+                } else if (!latestFromDb.derivedPublicKey.equals(recipientKey.derivedPublicKey, ignoreCase = true)) {
+                    Log.w(
+                        "DriveUploader",
+                        "⚠️ recipientKey mismatch (passed vs DB). use DB.\nemail=${recipient.email}\npassed=${recipientKey.derivedPublicKey}\ndb=${latestFromDb.derivedPublicKey}"
+                    )
+                }
+
+                val recipientPublicKeyHex = effectiveKey.derivedPublicKey.trim().takeIf { it.isNotBlank() }
+                    ?: return@withContext UploadResult.MissingRecipientPublicKey(null)
+
+                // ✅ 形式チェック（圧縮公開鍵 33byte = 66hex、先頭 02/03）
+                val okFormat =
+                    recipientPublicKeyHex.length == 66 &&
+                            (recipientPublicKeyHex.startsWith("02") || recipientPublicKeyHex.startsWith("03"))
+                if (!okFormat) {
+                    Log.e(
+                        "DriveUploader",
+                        "❌ invalid recipientPublicKeyHex. email=${recipient.email} len=${recipientPublicKeyHex.length} key=$recipientPublicKeyHex"
+                    )
                     return@withContext UploadResult.MissingRecipientPublicKey(null)
                 }
+
+                // ✅ 必須ログ（全文）
+                Log.d("DriveUploader", "🔐 encrypt recipientPublicKeyHex(full)=$recipientPublicKeyHex")
+                Log.d("DriveUploader", "🔐 encrypt recipientPublicKeyHex(len)=${recipientPublicKeyHex.length}")
+                Log.d("DriveUploader", "📧 recipient=${recipient.email} name=${recipient.name}")
 
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
 
-                val (uploadBytes, uploadName) = if (recipientPublicKeyHex != null) {
-
-                    // ✅ 追加：暗号化に使う「受信者公開鍵」を確定でログ出し（先頭16文字）
-                    Log.d(
-                        "DriveUploader",
-                        "🔐 encrypt recipientPublicKeyHex(head)=${recipientPublicKeyHex.take(16)}"
-                    )
-
-                    val secureBytes = SecurePackage.create(
-                        data = fileBytes,
-                        fileName = fileName,
-                        recipientPublicKeyHex = recipientPublicKeyHex,
-                        signingPrivateKeyHex = signingPrivateKeyHex,
-                        signerPublicKeyHex = signerPublicKeyHex
-                    )
-                    secureBytes to "$fileName.vpfs"
-                } else {
-                    fileBytes to fileName
-                }
+                val secureBytes = SecurePackage.create(
+                    data = fileBytes,
+                    fileName = fileName,
+                    recipientPublicKeyHex = recipientPublicKeyHex,
+                    signingPrivateKeyHex = signingPrivateKeyHex,
+                    signerPublicKeyHex = signerPublicKeyHex
+                )
+                val uploadName = "$fileName.vpfs"
 
                 val fileMetadata = File().apply {
                     name = uploadName
                     parents = listOf(dateFolderId)
                 }
 
-                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", uploadBytes)
+                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", secureBytes)
                 val uploadedFile = driveService.files().create(fileMetadata, fileContent)
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                // ✅ Drive 権限（共有範囲）
-                // 1) 日付フォルダ(dateFolderId)に reader 権限
-                grantReaderPermission(
-                    driveService = driveService,
-                    targetId = dateFolderId,
-                    recipientEmail = recipient.email
-                )
+                grantReaderPermission(driveService, dateFolderId, recipient.email)
+                grantReaderPermission(driveService, uploadedFile.id, recipient.email)
 
-                // ★重要：2) アップロードしたファイル(uploadedFile.id)にも reader 権限
-                // フォルダが見えても、ファイル本体ダウンロードが 403/404 になることがあるため付与する
-                grantReaderPermission(
-                    driveService = driveService,
-                    targetId = uploadedFile.id,
-                    recipientEmail = recipient.email
-                )
-
-                // 送信ログは従来どおり日付フォルダIDを保存し、削除処理に利用
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
                         date = currentDateTime,
@@ -146,20 +152,14 @@ class DriveUploader(private val context: Context) {
                     )
                 )
 
-                // 共有リンク用には「今回アップロードした日付フォルダ」を返す
-                return@withContext UploadResult.Success(fileName, uploadedFile.id, dateFolderId)
+                UploadResult.Success(fileName, uploadedFile.id, dateFolderId)
             } catch (e: Exception) {
                 Log.e("DriveUploader", "Upload error", e)
-                return@withContext UploadResult.Failure(e)
+                UploadResult.Failure(e)
             }
         }
     }
 
-    /**
-     * 受信者(email)に Drive の閲覧権限(role=reader)を付与する。
-     * - type="user" + emailAddress を使う（anyone共有はしない）
-     * - 通知メールは送らない
-     */
     private fun grantReaderPermission(
         driveService: Drive,
         targetId: String,
@@ -199,7 +199,6 @@ class DriveUploader(private val context: Context) {
                 )
             )
         }
-
         return trustLayer to derived
     }
 

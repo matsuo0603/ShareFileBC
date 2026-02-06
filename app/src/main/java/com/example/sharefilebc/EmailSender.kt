@@ -92,8 +92,8 @@ object EmailSender {
 
         val body = buildString {
             if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
-                // ✅ 新仕様：uuid + txid + 公開鍵 + fileId つきの /file リンク
-                val shareUrl = buildString {
+                // ✅ 新仕様：https（青リンクになりやすい）
+                val shareUrlHttps = buildString {
                     append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}?")
                     append("uuid=").append(Uri.encode(uuid))
                     append("&txid=").append(Uri.encode(txid))
@@ -107,10 +107,32 @@ object EmailSender {
                     }
                 }
 
+                // ✅ 新仕様：カスタムスキーム（App Linksが効かない端末/状況のための保険）
+                // Manifest に `sharefilebc://download` がある前提。
+                val shareUrlApp = buildString {
+                    append("sharefilebc://download?")
+                    append("fileId=").append(Uri.encode(fileId))
+                    append("&uuid=").append(Uri.encode(uuid))
+                    append("&txid=").append(Uri.encode(txid))
+                    append("&sender=").append(Uri.encode(senderPublicKeyHex))
+                    append("&to=").append(Uri.encode(recipientEmail))
+                    threshold?.let {
+                        append("&threshold=").append(Uri.encode(it.toString()))
+                    }
+                    senderAddress?.let {
+                        append("&refund=").append(Uri.encode(it))
+                    }
+                }
+
                 appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")
-                appendLine(shareUrl)
                 appendLine()
-                appendLine("リンクを開くとアプリが起動し、復号・ダウンロード画面へ直接遷移します。")
+                appendLine("【通常リンク（https）】")
+                appendLine(shareUrlHttps)
+                appendLine()
+                appendLine("もし上のリンクでアプリが起動しない場合は、次のリンクをタップしてください（アプリ起動用）：")
+                appendLine()
+                appendLine("【アプリ起動リンク】")
+                appendLine(shareUrlApp)
                 appendLine()
                 appendLine("ブラウザのみでアクセスしたい場合は、次のフォルダリンクを利用できます：")
                 appendLine(fallbackFolderLink)
@@ -239,26 +261,26 @@ object EmailSender {
                 setRaw(base64url)
             }
 
-            val ok = try {
+            val ok = runCatching {
                 service.users().messages().send("me", message).execute()
                 true
-            } catch (e: Exception) {
-                Log.e("EmailSender", "❌ Gmail API 送信失敗: ${e.message}", e)
+            }.getOrElse { e ->
+                Log.e("EmailSender", "❌ Gmail send failed", e)
                 false
             }
 
-            withContext(Dispatchers.Main) {
-                callback(ok)
-            }
+            withContext(Dispatchers.Main) { callback(ok) }
         }
     }
 
+    // ----------------------------------------------------
+    // Gmail API セットアップ
+    // ----------------------------------------------------
+
     private fun getGmailService(context: Context): Gmail? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
-
         val credential = GoogleAccountCredential.usingOAuth2(
-            context,
-            listOf(GmailScopes.GMAIL_SEND)
+            context, listOf(GmailScopes.GMAIL_SEND)
         ).apply {
             selectedAccount = account.account
         }
@@ -267,47 +289,29 @@ object EmailSender {
             NetHttpTransport(),
             GsonFactory.getDefaultInstance(),
             credential
-        )
-            .setApplicationName("ShareFileBC")
-            .build()
+        ).setApplicationName("ShareFileBC").build()
     }
-
-    // ---------------------- 権限まわり ----------------------
-
-    private const val RC_GMAIL_SEND_SCOPE = 0x4753 // "GS"
-
-    private val gmailSendScope = Scope(GmailScopes.GMAIL_SEND)
 
     private fun hasGmailSendScope(activity: Activity): Boolean {
         val account = GoogleSignIn.getLastSignedInAccount(activity) ?: return false
-        return GoogleSignIn.hasPermissions(account, gmailSendScope)
+        val scope = Scope(GmailScopes.GMAIL_SEND)
+        return GoogleSignIn.hasPermissions(account, scope)
     }
 
     private fun requestGmailSendScope(activity: Activity) {
         val account = GoogleSignIn.getLastSignedInAccount(activity) ?: return
-        GoogleSignIn.requestPermissions(
-            activity,
-            RC_GMAIL_SEND_SCOPE,
-            account,
-            gmailSendScope
-        )
+        val scope = Scope(GmailScopes.GMAIL_SEND)
+        GoogleSignIn.requestPermissions(activity, RC_GMAIL_SEND_SCOPE, account, scope)
     }
 
-    // ---------------------- 保留メール ----------------------
-
-    private data class PendingEmail(
-        val to: String,
-        val subject: String,
-        val body: String
-    )
-
+    private data class PendingEmail(val to: String, val subject: String, val body: String)
     private var pendingEmail: PendingEmail? = null
 
-    // ---------------------- Date ヘッダ ----------------------
+    private const val RC_GMAIL_SEND_SCOPE = 9101
 
     private fun formattedCurrentRfc2822Date(): String {
-        val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", Locale.US)
-        sdf.timeZone = TimeZone.getDefault()
-        return sdf.format(Date())
+        val df = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", Locale.US)
+        df.timeZone = TimeZone.getDefault()
+        return df.format(Date())
     }
 }

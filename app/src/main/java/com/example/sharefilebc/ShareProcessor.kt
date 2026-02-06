@@ -43,7 +43,7 @@ object ShareProcessor {
         val walletManager = WalletManager.getInstance(context)
         val db = AppDatabase.getDatabase(context)
 
-        // ✅ DBガード（ここで止める：二重処理事故防止）
+        // ✅ DBガード（二重処理防止）
         val alreadyProcessed =
             (db.receivedFileDao().findByShareId(uuid) != null) ||
                     (db.refundTaskDao().findByShareId(uuid) != null)
@@ -54,71 +54,127 @@ object ShareProcessor {
         }
 
         try {
-            // 1. 自分の公開鍵取得（TrustLayer用）
+            // 1. 自分の公開鍵取得（候補を両方持つ）
             val myKeyEntity = db.myPublicKeyDao().getPrimary()
-            val myPublicKey = myKeyEntity?.trustLayerPublicKey
-            if (myPublicKey == null) {
-                Log.e(TAG, "❌ 自分の公開鍵が未登録")
+            val derived = myKeyEntity?.derivedPublicKey
+            val trustLayer = myKeyEntity?.trustLayerPublicKey
+
+            if (derived.isNullOrBlank() && trustLayer.isNullOrBlank()) {
+                Log.e(TAG, "❌ 自分の公開鍵が未登録（derived/trustlayer 共にnull）")
                 return@withContext ShareProcessResult.Error("公開鍵が未登録です")
             }
 
-            // 2. P2Cアドレス生成
-            val p2cAddress = walletManager.generateP2CAddress(
-                publicKey = myPublicKey,
-                contract = uuid,
-                colorId = colorId
+            // ✅ paymentBase候補（null/空は除外）
+            val paymentBases = listOfNotNull(
+                derived?.takeIf { it.isNotBlank() },
+                trustLayer?.takeIf { it.isNotBlank() }
+            ).distinct()
+
+            // ✅ contract候補（送受の揺れ吸収）
+            val contractCandidates = listOf(
+                uuid,
+                "shared-file-$uuid"
+            ).distinct()
+
+            Log.d(TAG, "🔑 paymentBase candidates=${paymentBases.joinToString { it.take(16) + "..." }}")
+            Log.d(TAG, "🧾 contract candidates=$contractCandidates")
+
+            // 2. P2C候補を全探索して「実際にunspentが付く」ものを採用
+            data class Candidate(
+                val paymentBase: String,
+                val contract: String,
+                val address: String,
+                val total: ULong,
+                val validTxs: List<Pair<String, String>>
             )
-            Log.d(TAG, "✅ P2C address generated: $p2cAddress")
 
-            // 3. トランザクション検証と金額集計
-            var totalAmount = 0UL
-            val validTransactions = mutableListOf<Pair<String, String>>()
+            var best: Candidate? = null
 
-            for (txid in txids) {
-                try {
-                    val tx = walletManager.getTransaction(txid)
-                    val outputs = walletManager.getTxOutByAddress(tx, p2cAddress)
+            for (pb in paymentBases) {
+                for (contractStr in contractCandidates) {
 
-                    val unspentAmount = outputs
-                        .filter { it.unspent }
-                        .sumOf { it.amount.toLong() }
-                        .toULong()
-
-                    if (unspentAmount > 0UL) {
-                        totalAmount += unspentAmount
-                        validTransactions.add(txid to tx)
-                        Log.d(TAG, "  ✅ txid=$txid: unspent=$unspentAmount")
+                    // ✅ Kotlin 2.2未満対応：ラムダ内continue禁止なので、try/catchで外側continue
+                    val p2c: String = try {
+                        walletManager.generateP2CAddress(
+                            publicKey = pb,
+                            contract = contractStr,
+                            colorId = colorId
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "⚠️ P2C calc failed: paymentBase=${pb.take(16)}... contract=$contractStr", e)
+                        continue
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "  ⚠️ txid=$txid: failed to verify", e)
+
+                    var totalAmount = 0UL
+                    val validTransactions = mutableListOf<Pair<String, String>>()
+
+                    for (txid in txids) {
+                        try {
+                            val tx = walletManager.getTransaction(txid)
+                            val outputs = walletManager.getTxOutByAddress(tx, p2c)
+
+                            val unspentAmount = outputs
+                                .filter { it.unspent }
+                                .sumOf { it.amount.toLong() }
+                                .toULong()
+
+                            if (unspentAmount > 0UL) {
+                                totalAmount += unspentAmount
+                                validTransactions.add(txid to tx)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "  ⚠️ txid=$txid: failed to verify for p2c=$p2c", e)
+                        }
+                    }
+
+                    Log.d(TAG, "🧪 candidate p2c=$p2c total=$totalAmount (pb=${pb.take(16)}..., contract=$contractStr)")
+
+                    val cand = Candidate(
+                        paymentBase = pb,
+                        contract = contractStr,
+                        address = p2c,
+                        total = totalAmount,
+                        validTxs = validTransactions
+                    )
+
+                    val bestTotal = best?.total ?: 0UL
+                    if (best == null || cand.total > bestTotal) {
+                        best = cand
+                    }
                 }
             }
 
-            Log.d(TAG, "📊 Total received: $totalAmount (threshold: $threshold)")
+            val chosen = best
+            if (chosen == null) {
+                Log.e(TAG, "❌ No candidate P2C could be generated")
+                return@withContext ShareProcessResult.Error("P2C生成に失敗しました")
+            }
 
-            // 4. 送信者がブロックリストに登録されているか確認
+            Log.d(TAG, "✅ P2C selected: ${chosen.address}")
+            Log.d(TAG, "✅ selected paymentBase=${chosen.paymentBase.take(16)}... contract=${chosen.contract}")
+            Log.d(TAG, "📊 Total received: ${chosen.total} (threshold: $threshold)")
+
+            // 3. 送信者ブロック確認
             val senderIsBlocked = isSenderBlocked(context, senderPublicKey)
 
-            // 5. 閾値チェックと判定
-            // payable=true の意味を「自由に使える（ロック解除）」として使っているので、
-            // ここでは underpaid 判定として名前だけ維持（ロジックは同じ）
-            val underpaid = totalAmount < threshold
-            val contractId = "shared-file-$uuid"
+            // 4. 閾値判定
+            val underpaid = chosen.total < threshold
+
+            // ✅ contractId も「同じ文字列」で固定（ズレ事故を防ぐ）
+            val contractId = chosen.contract
 
             if (underpaid || senderIsBlocked) {
-                // ❌ 不正判定：閾値未満 or ブロック済み
                 Log.w(TAG, "🚫 Share rejected: underpaid=$underpaid, blocked=$senderIsBlocked")
 
-                // Contract保存（payable=true: 自由に使える）
+                // Contract保存（payable=true）
                 val contract = Contract(
                     contractId = contractId,
-                    contract = uuid,
-                    paymentBase = myPublicKey,
+                    contract = chosen.contract,
+                    paymentBase = chosen.paymentBase,
                     payable = true
                 )
-                storeContractIdempotent(walletManager, contract)
+                storeContractBestEffort(walletManager, contract)
 
-                // ReceivedFileEntity更新（ダウンロード不可）
                 updateReceivedFile(
                     context = context,
                     shareID = uuid,
@@ -128,31 +184,26 @@ object ShareProcessor {
                     isDownloadEverAllowed = false
                 )
 
-                // 不正送信者として登録
                 if (!senderIsBlocked) {
                     registerFraudulentSender(context, senderPublicKey, "Payment below threshold")
                 }
 
-                // ウォレット同期（Swift版と同様：受信後は即sync）
                 walletManager.sync()
-
-                return@withContext ShareProcessResult.BelowThreshold(totalAmount, threshold)
+                return@withContext ShareProcessResult.BelowThreshold(chosen.total, threshold)
             }
 
-            // ✅ 正常判定：閾値以上
-            Log.d(TAG, "✅ Share accepted: amount=$totalAmount >= threshold=$threshold")
+            // ✅ 正常判定
+            Log.d(TAG, "✅ Share accepted: amount=${chosen.total} >= threshold=$threshold")
 
-            // ✅ ここが重要：
-            // 正常受信時は payable=false（返金処理のためにロック）にする
+            // 正常受信時は payable=false（返金のためにロック）
             val contract = Contract(
                 contractId = contractId,
-                contract = uuid,
-                paymentBase = myPublicKey,
+                contract = chosen.contract,
+                paymentBase = chosen.paymentBase,
                 payable = false
             )
-            storeContractIdempotent(walletManager, contract)
+            storeContractBestEffort(walletManager, contract)
 
-            // ReceivedFileEntity更新（ダウンロード可能）
             updateReceivedFile(
                 context = context,
                 shareID = uuid,
@@ -163,22 +214,20 @@ object ShareProcessor {
             )
 
             // 返金タスク保存
-            if (refundAddress != null && validTransactions.isNotEmpty()) {
+            if (refundAddress != null && chosen.validTxs.isNotEmpty()) {
                 saveRefundTask(
                     context = context,
                     shareID = uuid,
                     contractId = contractId,
                     refundAddress = refundAddress,
-                    transactions = validTransactions,
-                    amount = totalAmount,
+                    transactions = chosen.validTxs,
+                    amount = chosen.total,
                     senderPublicKey = senderPublicKey
                 )
             }
 
-            // ウォレット同期
             walletManager.sync()
-
-            return@withContext ShareProcessResult.Success(totalAmount)
+            return@withContext ShareProcessResult.Success(chosen.total)
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ processReceivedShare failed", e)
@@ -187,20 +236,28 @@ object ShareProcessor {
     }
 
     /**
-     * ✅ 多重実行・再入に強くする：既に存在するContractなら成功扱いにする
-     * これで "contract already exists" が出ても事故らない
+     * ✅ storeContract が失敗しても「受信処理を止めない」
+     * invalid payment base / already exists を吸収する
      */
-    private fun storeContractIdempotent(walletManager: WalletManager, contract: Contract) {
+    private fun storeContractBestEffort(walletManager: WalletManager, contract: Contract) {
         runCatching {
             walletManager.storeContract(contract)
             Log.d(TAG, "✅ storeContract OK: contractId=${contract.contractId}")
         }.onFailure { e ->
             val msg = e.message.orEmpty()
             val isAlready = msg.contains("already exists", ignoreCase = true)
-            if (isAlready) {
-                Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
-            } else {
-                throw e
+            val isInvalidPaymentBase = msg.contains("invalid payment base", ignoreCase = true)
+
+            when {
+                isAlready -> {
+                    Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
+                }
+                isInvalidPaymentBase -> {
+                    Log.e(TAG, "🟠 storeContract invalid payment base -> continue without stopping: ${e.message}")
+                }
+                else -> {
+                    Log.e(TAG, "🔴 storeContract failed -> continue: ${e.message}", e)
+                }
             }
         }
     }
@@ -222,14 +279,12 @@ object ShareProcessor {
         val db = AppDatabase.getDatabase(context)
 
         try {
-            // 1. RefundTaskEntityから返金情報取得
             val refundTask = db.refundTaskDao().findByShareId(uuid)
             if (refundTask == null) {
                 Log.e(TAG, "❌ Refund task not found")
                 return@withContext RefundResult.Error("返金情報が見つかりません")
             }
 
-            // 2. ContextJSONをパース
             val contextJson = JSONObject(refundTask.contextJSON ?: "{}")
             val transactions = mutableListOf<Pair<String, String>>()
             val txArray = contextJson.optJSONArray("transactions") ?: JSONArray()
@@ -238,54 +293,72 @@ object ShareProcessor {
                 transactions.add(txObj.getString("txid") to txObj.getString("transaction"))
             }
 
-            // 3. 自分の公開鍵取得
+            // ✅ refund時も contractId 文字列で統一（ズレ回避）
+            val contractStr = contractId.ifBlank { "shared-file-$uuid" }
+
+            // paymentBase候補
             val myKeyEntity = db.myPublicKeyDao().getPrimary()
-            val myPublicKey = myKeyEntity?.trustLayerPublicKey
-            if (myPublicKey == null) {
+            val derived = myKeyEntity?.derivedPublicKey
+            val trustLayer = myKeyEntity?.trustLayerPublicKey
+            val paymentBases = listOfNotNull(
+                derived?.takeIf { it.isNotBlank() },
+                trustLayer?.takeIf { it.isNotBlank() }
+            ).distinct()
+
+            if (paymentBases.isEmpty()) {
                 return@withContext RefundResult.Error("公開鍵が未登録です")
             }
 
-            // 4. P2Cアドレス再生成
-            val p2cAddress = walletManager.generateP2CAddress(
-                publicKey = myPublicKey,
-                contract = uuid,
-                colorId = colorId
-            )
+            // ✅ UTXOが取れるP2Cを選ぶ
+            var chosenAddress: String? = null
+            var chosenUtxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
+            var chosenTotal = 0UL
 
-            // 5. UTXO収集
-            val utxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
-            var totalAmount = 0UL
+            for (pb in paymentBases) {
+                val p2c = walletManager.generateP2CAddress(
+                    publicKey = pb,
+                    contract = contractStr,
+                    colorId = colorId
+                )
 
-            for ((_, tx) in transactions) {
-                val outputs = walletManager.getTxOutByAddress(tx, p2cAddress)
-                outputs.filter { it.unspent }.forEach { out ->
-                    utxos.add(out)
-                    totalAmount += out.amount.toULong()
+                val utxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
+                var totalAmount = 0UL
+
+                for ((_, tx) in transactions) {
+                    val outputs = walletManager.getTxOutByAddress(tx, p2c)
+                    outputs.filter { it.unspent }.forEach { out ->
+                        utxos.add(out)
+                        totalAmount += out.amount.toULong()
+                    }
+                }
+
+                if (totalAmount > chosenTotal) {
+                    chosenTotal = totalAmount
+                    chosenUtxos = utxos
+                    chosenAddress = p2c
                 }
             }
 
-            if (utxos.isEmpty()) {
+            if (chosenAddress == null || chosenUtxos.isEmpty()) {
                 Log.w(TAG, "⚠️ No UTXOs available for refund")
                 return@withContext RefundResult.Error("返金可能な出力がありません")
             }
 
-            // 6. トークン送金（返金）
             val txid = walletManager.transferToken(
                 toAddress = refundAddress,
-                amount = totalAmount,
+                amount = chosenTotal,
                 colorId = colorId,
-                utxos = utxos
+                utxos = chosenUtxos
             )
 
-            Log.d(TAG, "✅ Refund success: txid=$txid, amount=$totalAmount")
+            Log.d(TAG, "✅ Refund success: txid=$txid, amount=$chosenTotal")
 
-            // 7. ウォレット同期
             walletManager.sync()
 
-            // 8. RefundTask削除
+            // RefundTask削除（※あなたの実装に合わせている）
             db.refundTaskDao().deleteByShareId(uuid)
 
-            return@withContext RefundResult.Success(txid, totalAmount)
+            return@withContext RefundResult.Success(txid, chosenTotal)
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ refundShare failed", e)
@@ -309,13 +382,10 @@ object ShareProcessor {
         val db = AppDatabase.getDatabase(context)
 
         try {
-            // 1. Contractをpayable=trueに更新（自由に使える状態へ）
             walletManager.updateContractPayable(contractId, payable = true)
 
-            // 2. 不正送信者として登録
             registerFraudulentSender(context, senderPublicKey, "Refund declined by recipient")
 
-            // 3. RefundTask削除
             db.refundTaskDao().deleteByShareId(uuid)
 
             Log.d(TAG, "✅ Refund declined and sender blocked")
@@ -331,9 +401,6 @@ object ShareProcessor {
     // Private Helper Functions
     // ============================================================
 
-    /**
-     * copyを使ってReceivedFileEntityを更新
-     */
     private suspend fun updateReceivedFile(
         context: Context,
         shareID: String,
@@ -375,7 +442,6 @@ object ShareProcessor {
         val emailKeyDao = db.emailKeyDao()
         val blockedSenderDao = db.blockedSenderDao()
 
-        // TrustLayer公開鍵からメールアドレスを逆引き
         val emailKey = emailKeyDao.findByTrustLayerPublicKey(senderPublicKey)
         if (emailKey != null) {
             val entity = BlockedSenderEntity(
@@ -415,7 +481,6 @@ object ShareProcessor {
     ) {
         val db = AppDatabase.getDatabase(context)
 
-        // JSONで保存
         val contextJson = JSONObject().apply {
             put("uuid", shareID)
             put("contractId", contractId)
@@ -452,11 +517,9 @@ object ShareProcessor {
 
 // ============================================================
 // Result Types
-// ============================================================
-
 sealed class ShareProcessResult {
-    data class Success(val amount: ULong) : ShareProcessResult()
-    data class BelowThreshold(val received: ULong, val threshold: ULong) : ShareProcessResult()
+    data class Success(val total: ULong) : ShareProcessResult()
+    data class BelowThreshold(val total: ULong, val threshold: ULong) : ShareProcessResult()
     data class Error(val message: String) : ShareProcessResult()
 }
 

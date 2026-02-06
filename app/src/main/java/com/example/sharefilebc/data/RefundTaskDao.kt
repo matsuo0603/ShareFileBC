@@ -32,4 +32,7 @@ interface RefundTaskDao {
      */
     @Query("DELETE FROM refund_tasks WHERE shareID = :shareId")
     suspend fun deleteByShareId(shareId: String)
+
+    @Query("UPDATE refund_tasks SET status = :status WHERE shareID = :shareId")
+    suspend fun markStatusByShareId(shareId: String, status: String)
 }

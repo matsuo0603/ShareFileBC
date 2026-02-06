@@ -11,6 +11,8 @@
     <a id="manualLink" href="#">こちら</a> をタップしてください。
 </p>
 
+<div id="debug" style="font-family: monospace; white-space: pre-wrap; background:#f3f3f3; padding:10px; border-radius:8px; display:none;"></div>
+
 <div id="fallback" style="display:none; margin-top:12px;">
     <p>アプリが開かない場合：</p>
     <ul>
@@ -21,31 +23,76 @@
 
 <script>
     document.addEventListener("DOMContentLoaded", function () {
-      // 1) 新形式: /folder/<ID> を優先
       const segs = window.location.pathname.split("/").filter(Boolean);
-      let folderId = (segs.length >= 2 && segs[0] === "folder") ? segs[1] : null;
+      const params = new URLSearchParams(window.location.search);
 
-      // 2) 互換: 旧形式 ?folderId=<ID> も一応サポート
-      if (!folderId) {
-        const params = new URLSearchParams(window.location.search);
-        folderId = params.get("folderId");
+      // ルート判定
+      const route = segs.length >= 1 ? segs[0] : null;
+
+      // deep link を組み立てる（Android側: sharefilebc://download）
+      let deepLink = null;
+
+      if (route === "folder" && segs.length >= 2) {
+        // /folder/<folderId>
+        const folderId = segs[1];
+        deepLink = `sharefilebc://download?folderId=${encodeURIComponent(folderId)}`;
+
+      } else if (route === "file" && segs.length >= 2) {
+        // /file/<fileId>?uuid=...&txid=...&sender=...&to=...&threshold=...&refund=...
+        const fileId = segs[1];
+
+        const uuid = params.get("uuid");
+        const txid = params.get("txid");
+        const sender = params.get("sender");
+        const to = params.get("to");
+        const threshold = params.get("threshold");
+        const refund = params.get("refund");
+
+        // 必須（最低限）：fileId + uuid + txid
+        // sender/to/threshold/refund はあれば付ける
+        let q = [];
+        q.push(`fileId=${encodeURIComponent(fileId)}`);
+        if (uuid) q.push(`uuid=${encodeURIComponent(uuid)}`);
+        if (txid) q.push(`txid=${encodeURIComponent(txid)}`);
+        if (sender) q.push(`sender=${encodeURIComponent(sender)}`);
+        if (to) q.push(`to=${encodeURIComponent(to)}`);
+        if (threshold) q.push(`threshold=${encodeURIComponent(threshold)}`);
+        if (refund) q.push(`refund=${encodeURIComponent(refund)}`);
+
+        deepLink = `sharefilebc://download?` + q.join("&");
+
+      } else {
+        // 互換：旧形式 ?folderId=<ID>
+        const folderId = params.get("folderId");
+        if (folderId) {
+          deepLink = `sharefilebc://download?folderId=${encodeURIComponent(folderId)}`;
+        }
       }
 
-      if (!folderId) {
-        document.body.innerHTML = "<p>フォルダIDが指定されていません。</p>";
+      if (!deepLink) {
+        document.body.innerHTML = "<p>リンク情報が不足しています（folderId / fileId が見つかりません）。</p>";
         return;
       }
 
-      // ✅ カスタムスキームでのフォールバック（アプリ未インストール時用）
-      // 既存実装に合わせて download?folderId=... を維持
-      const deepLink = `sharefilebc://download?folderId=${encodeURIComponent(folderId)}`;
+      // 手動リンク
       const manualLink = document.getElementById("manualLink");
       manualLink.href = deepLink;
+
+      // デバッグ表示（必要なら true に）
+      const showDebug = true;
+      if (showDebug) {
+        const dbg = document.getElementById("debug");
+        dbg.style.display = "block";
+        dbg.textContent =
+          "path=" + window.location.pathname + "\n" +
+          "search=" + window.location.search + "\n" +
+          "deepLink=" + deepLink + "\n";
+      }
 
       // アプリ起動を試みる
       window.location.href = deepLink;
 
-      // 1.5秒以内にページ離脱しなければ未インストールとみなして案内を表示
+      // 1.5秒以内にページ離脱しなければ未インストール等とみなして案内を表示
       setTimeout(() => {
         const fb = document.getElementById("fallback");
         if (fb) fb.style.display = "block";

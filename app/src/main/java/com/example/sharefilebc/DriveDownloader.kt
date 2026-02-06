@@ -28,6 +28,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import javax.crypto.AEADBadTagException
 
 class DriveDownloader(private val context: Context) {
 
@@ -52,6 +53,11 @@ class DriveDownloader(private val context: Context) {
      * - 受信側: 送信者の /0 公開鍵で署名検証（ECDSA）
      */
     private val RECIPIENT_PRIVATE_KEY_PATH = "m/44'/0'/0'/0/1"
+
+    private fun isVpfsLikeFileName(name: String): Boolean {
+        // .tmp も許容（temp保存してるため）
+        return name.endsWith(".vpfs", ignoreCase = true) || name.contains(".vpfs", ignoreCase = true)
+    }
 
     private fun getDriveService(): Drive? {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
@@ -217,6 +223,20 @@ class DriveDownloader(private val context: Context) {
                     senderEmail = fileCtx?.ownerEmail
                 )
 
+                // ✅ 復号に失敗して .vpfs のままなら Downloads へ保存しない
+                // （ユーザーにとっては意味のない暗号化ファイルが残るだけになる）
+                if (decryptedFile == tempFile && isVpfsLikeFileName(tempFile.name)) {
+                    if (tempFile.exists()) tempFile.delete()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "復号に失敗しました。\n送信側が別の受信者鍵で暗号化している可能性があります。\n共有相手登録（鍵交換）をやり直してください。",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@withContext null
+                }
+
                 // ✅ 最終的にDownloadsへコピー（MediaStore）
                 val finalFile = copyToDownloads(decryptedFile)
 
@@ -321,6 +341,15 @@ class DriveDownloader(private val context: Context) {
             val recipientPrivateKeyHex = wallet.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
             val recipientPublicKeyHex = wallet.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
 
+            // ✅ 重要：自分の /1 公開鍵を「全文」でログ出し
+            val myDerivedPub = wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
+            Log.d("DriveDownloader", "🔑 my /1 publicKey(full)=$myDerivedPub")
+            Log.d("DriveDownloader", "🔑 my /1 publicKey(len)=${myDerivedPub.length}")
+
+            Log.d("DriveDownloader", "🔐 recipientPublicKeyHex(full)=$recipientPublicKeyHex")
+            Log.d("DriveDownloader", "🔐 recipientPublicKeyHex(len)=${recipientPublicKeyHex.length}")
+            Log.d("DriveDownloader", "🔎 /1 keys equal? ${myDerivedPub.equals(recipientPublicKeyHex, ignoreCase = true)}")
+
             Log.d("DriveDownloader", "🔐 受信者公開鍵(/1): ${recipientPublicKeyHex.take(16)}...")
             Log.d("DriveDownloader", "✍️  送信者署名用公開鍵(/0): ${signerPublicKeyHex.take(16)}...")
             Log.d("DriveDownloader", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -353,13 +382,19 @@ class DriveDownloader(private val context: Context) {
             }
             downloadedFile
         } catch (e: Exception) {
+            // ✅ GCM の mac check failed は「鍵が違う / nonce+tag+cipher が違う」の典型
+            // まずは「送信側が暗号化に使った受信者公開鍵」と「受信側の /1」が一致しているかを疑う
             Log.e("DriveDownloader", "❌ 予期しないエラー", e)
             withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    context,
-                    "エラーが発生しました: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
+                val msg = when (e) {
+                    is AEADBadTagException ->
+                        "復号に失敗しました（GCMタグ不一致）\n" +
+                                "送信側が別の受信者鍵で暗号化している可能性があります。\n" +
+                                "共有相手登録（鍵交換）をやり直してください。"
+                    else ->
+                        "エラーが発生しました: ${e.message}"
+                }
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             }
             downloadedFile
         }
@@ -392,9 +427,6 @@ class DriveDownloader(private val context: Context) {
                     } ?: throw IOException("Failed to open output stream")
 
                     Log.d("DriveDownloader", "✅ MediaStore経由でコピー完了: ${sourceFile.name} uri=$uri")
-
-                    // Android 10+ は MediaStore 登録済みなので scan は基本不要（やるなら file path ではなく uri が必要）
-                    // ここでは何もしない
 
                     // 返り値は表示用に “Downloadsにあるはずのファイル名” を持つ File を返す
                     File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), sourceFile.name)

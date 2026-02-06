@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
+import org.json.JSONObject
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
 import com.example.sharefilebc.data.SharePaymentEntity
@@ -355,6 +356,7 @@ fun DownloadScreen(
                 refundPendingCount = refundTasks.size,
                 recentShareIds = receivedFiles.mapNotNull { it.shareID }.distinct().take(3)
             )
+
 
 
             if (senderGroups.isEmpty()) {
