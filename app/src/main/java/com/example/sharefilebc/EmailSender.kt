@@ -7,11 +7,13 @@ import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
+import com.example.sharefilebc.data.DriveServiceHelper
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.Scope
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
+import com.google.api.services.drive.model.File as DriveFile
 import com.google.api.services.gmail.Gmail
 import com.google.api.services.gmail.GmailScopes
 import com.google.api.services.gmail.model.Message
@@ -29,10 +31,17 @@ import java.util.TimeZone
 /**
  * Gmail API（gmail.send）を使ってメールを自動送信するためのユーティリティ。
  *
- * - sendAuto(...) は互換用の簡易 API
- * - sendEmailWithDriveLink(...) は uuid / txid を含む「新仕様」のリンクを送る
+ * ✅ 今回の追加：
+ * - 新仕様（uuid/txid あり）のとき、Driveファイルの description に shareメタを保存する。
+ * - 受信側の自動同期（SYNC_INCOMING）が description を読んで processReceivedShare を回せるようにする。
+ *
+ * ✅ 重要：
+ * - Gmail送信処理（スコープ同意・送信形式）は絶対に壊さないため、既存ロジックはそのまま。
+ * - description 更新が失敗しても、メール送信は失敗させない（独立処理）。
  */
 object EmailSender {
+
+    private const val TAG = "EmailSender"
 
     // バックグラウンド送信用スコープ
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -57,7 +66,6 @@ object EmailSender {
             recipientEmail = recipientEmail,
             fileName = fileName,
             folderId = folderId
-            // fileId / senderPublicKeyHex / uuid / txid は null のまま（旧仕様フォールバック）
         )
     }
 
@@ -90,6 +98,23 @@ object EmailSender {
         // 旧仕様のフォルダ直リンク（常に用意しておく）
         val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
+        // ✅ 新仕様のときだけ、Driveのdescriptionに shareメタを保存（自動受信用）
+        // 失敗してもメール送信は続行する（絶対に壊さない）
+        if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+            val descQuery = buildString {
+                append("uuid=").append(Uri.encode(uuid))
+                append("&txid=").append(Uri.encode(txid))
+                append("&sender=").append(Uri.encode(senderPublicKeyHex))
+                append("&to=").append(Uri.encode(recipientEmail))
+                threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
+                senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
+            }
+
+            ioScope.launch {
+                updateDriveDescriptionSafely(context, fileId, descQuery)
+            }
+        }
+
         val body = buildString {
             if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
                 // ✅ 新仕様：https（青リンクになりやすい）
@@ -99,16 +124,11 @@ object EmailSender {
                     append("&txid=").append(Uri.encode(txid))
                     append("&sender=").append(Uri.encode(senderPublicKeyHex))
                     append("&to=").append(Uri.encode(recipientEmail))
-                    threshold?.let {
-                        append("&threshold=").append(Uri.encode(it.toString()))
-                    }
-                    senderAddress?.let {
-                        append("&refund=").append(Uri.encode(it))
-                    }
+                    threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
+                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                 }
 
                 // ✅ 新仕様：カスタムスキーム（App Linksが効かない端末/状況のための保険）
-                // Manifest に `sharefilebc://download` がある前提。
                 val shareUrlApp = buildString {
                     append("sharefilebc://download?")
                     append("fileId=").append(Uri.encode(fileId))
@@ -116,12 +136,8 @@ object EmailSender {
                     append("&txid=").append(Uri.encode(txid))
                     append("&sender=").append(Uri.encode(senderPublicKeyHex))
                     append("&to=").append(Uri.encode(recipientEmail))
-                    threshold?.let {
-                        append("&threshold=").append(Uri.encode(it.toString()))
-                    }
-                    senderAddress?.let {
-                        append("&refund=").append(Uri.encode(it))
-                    }
+                    threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
+                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                 }
 
                 appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")
@@ -143,6 +159,7 @@ object EmailSender {
             }
         }
 
+        // ✅ ここは既存のまま（送信が壊れないように）
         sendEmail(context, recipientEmail, subject, body)
     }
 
@@ -171,7 +188,29 @@ object EmailSender {
     }
 
     // ----------------------------------------------------
-    // 内部実装
+    // ✅ Drive description 更新（追加）
+    // ----------------------------------------------------
+
+    private suspend fun updateDriveDescriptionSafely(context: Context, fileId: String, description: String) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val drive = DriveServiceHelper.getDriveService(context)
+                val meta = DriveFile().apply { this.description = description }
+
+                drive.files().update(fileId, meta)
+                    .setFields("id, description")
+                    .execute()
+
+                Log.d(TAG, "✅ Drive description updated: fileId=$fileId desc=$description")
+            }.onFailure { e ->
+                // ✅ 失敗してもメール送信は壊さない
+                Log.e(TAG, "❌ Drive description update failed: fileId=$fileId", e)
+            }
+        }
+    }
+
+    // ----------------------------------------------------
+    // 内部実装（既存）
     // ----------------------------------------------------
 
     private fun sendEmail(
