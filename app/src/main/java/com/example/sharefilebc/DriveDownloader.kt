@@ -60,7 +60,11 @@ class DriveDownloader(private val context: Context) {
     }
 
     private fun getDriveService(): Drive? {
-        val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
+        val account = GoogleSignIn.getLastSignedInAccount(context)
+        if (account == null) {
+            Log.w("DriveDownloader", "⚠️ Drive service unavailable: GoogleSignIn.getLastSignedInAccount == null (need login)")
+            return null
+        }
         val credential = GoogleAccountCredential.usingOAuth2(
             context, listOf(DriveScopes.DRIVE)
         ).apply {

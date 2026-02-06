@@ -1098,23 +1098,25 @@ private suspend fun resolveMyKeys(
     myPublicKeyDao: MyPublicKeyDao,
     context: android.content.Context
 ): Pair<String, String> {
-    val wallet = KeyDerivation.getInstance(context)
-    val existing = myPublicKeyDao.getPrimary()
-    val trustLayer = existing?.trustLayerPublicKey
-        ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
-    val derived = existing?.derivedPublicKey
-        ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
 
-    if (existing == null || existing.trustLayerPublicKey != trustLayer || existing.derivedPublicKey != derived) {
-        myPublicKeyDao.upsert(
-            MyPublicKeyEntity(
-                trustLayerPublicKey = trustLayer,
-                derivedPublicKey = derived
-            )
+    val walletManager = WalletManager.getInstance(context)
+    walletManager.initializeIfNeeded()
+    // ↑ ここで my_public_keys が必ず作られる前提
+
+    val existing = myPublicKeyDao.getPrimary()
+        ?: throw IllegalStateException(
+            "MyPublicKeyEntity is missing even after wallet initialization"
         )
-    }
+
+    val trustLayer = existing.trustLayerPublicKey
+        ?: throw IllegalStateException("trustLayerPublicKey is null")
+
+    val derived = existing.derivedPublicKey
+        ?: throw IllegalStateException("derivedPublicKey is null")
+
     return trustLayer to derived
 }
+
 
 private fun nowIsoString(): String {
     val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.getDefault())

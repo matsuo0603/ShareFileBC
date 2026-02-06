@@ -93,7 +93,6 @@ object ShareProcessor {
             for (pb in paymentBases) {
                 for (contractStr in contractCandidates) {
 
-                    // ✅ Kotlin 2.2未満対応：ラムダ内continue禁止なので、try/catchで外側continue
                     val p2c: String = try {
                         walletManager.generateP2CAddress(
                             publicKey = pb,
@@ -173,7 +172,10 @@ object ShareProcessor {
                     paymentBase = chosen.paymentBase,
                     payable = true
                 )
-                storeContractBestEffort(walletManager, contract)
+                if (!storeContractBestEffort(walletManager, contract)) {
+                    // ❗ここで止めないと UIだけ進んで詰む
+                    return@withContext ShareProcessResult.Error("contract保存に失敗しました（paymentBaseがwalletに存在しません）")
+                }
 
                 updateReceivedFile(
                     context = context,
@@ -186,6 +188,20 @@ object ShareProcessor {
 
                 if (!senderIsBlocked) {
                     registerFraudulentSender(context, senderPublicKey, "Payment below threshold")
+                }
+
+                // ✅ payable=true の時点で残高に反映されないケースがあるため、P2C UTXO を自己送金で claim
+                runCatching {
+                    val (claimTxid, claimAmount) = claimP2cUtxosToSelf(
+                        walletManager = walletManager,
+                        paymentBases = paymentBases,
+                        contract = chosen.contract,
+                        transactions = chosen.validTxs.map { it.second },
+                        colorId = colorId
+                    )
+                    Log.d(TAG, "[CLAIM] underpaid claimTxid=$claimTxid amount=$claimAmount")
+                }.onFailure { e ->
+                    Log.w(TAG, "[CLAIM] underpaid sweep failed (continue): ${e.message}")
                 }
 
                 walletManager.sync()
@@ -202,7 +218,10 @@ object ShareProcessor {
                 paymentBase = chosen.paymentBase,
                 payable = false
             )
-            storeContractBestEffort(walletManager, contract)
+            if (!storeContractBestEffort(walletManager, contract)) {
+                // ❗ここで止めないと UIだけ進んで詰む
+                return@withContext ShareProcessResult.Error("contract保存に失敗しました（paymentBaseがwalletに存在しません）")
+            }
 
             updateReceivedFile(
                 context = context,
@@ -236,30 +255,131 @@ object ShareProcessor {
     }
 
     /**
-     * ✅ storeContract が失敗しても「受信処理を止めない」
-     * invalid payment base / already exists を吸収する
+     * ✅ storeContract は paymentBase が wallet 側で「自分の鍵として認識」されていないと
+     * `invalid payment base` で失敗する。
+     *
+     * その場合は WalletManager.ensurePublicKeyAvailable(paymentBase) で鍵プールを前進させてから
+     * 1回だけリトライする。
+     *
+     * @return true: 保存できた / すでに存在する（OK扱い）
+     *         false: どうしても保存できない（この共有は受領/返金できないので処理を止めるべき）
      */
-    private fun storeContractBestEffort(walletManager: WalletManager, contract: Contract) {
-        runCatching {
-            walletManager.storeContract(contract)
+    private fun storeContractBestEffort(walletManager: WalletManager, contract: Contract): Boolean {
+        // 1回目
+        val first = runCatching { walletManager.storeContract(contract) }
+        if (first.isSuccess) {
             Log.d(TAG, "✅ storeContract OK: contractId=${contract.contractId}")
-        }.onFailure { e ->
-            val msg = e.message.orEmpty()
-            val isAlready = msg.contains("already exists", ignoreCase = true)
-            val isInvalidPaymentBase = msg.contains("invalid payment base", ignoreCase = true)
+            return true
+        }
 
-            when {
-                isAlready -> {
-                    Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
-                }
-                isInvalidPaymentBase -> {
-                    Log.e(TAG, "🟠 storeContract invalid payment base -> continue without stopping: ${e.message}")
-                }
-                else -> {
-                    Log.e(TAG, "🔴 storeContract failed -> continue: ${e.message}", e)
+        val e1 = first.exceptionOrNull()
+        val msg1 = e1?.message.orEmpty()
+
+        // already exists は OK 扱い
+        if (msg1.contains("already exists", ignoreCase = true)) {
+            Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
+            return true
+        }
+
+        // invalid payment base 以外は失敗（止める）
+        val invalidPb = msg1.contains("invalid payment base", ignoreCase = true)
+        if (!invalidPb) {
+            Log.e(TAG, "🔴 storeContract failed: ${e1?.message}", e1)
+            return false
+        }
+
+        // invalid payment base -> ensurePublicKeyAvailable して1回だけリトライ
+        Log.e(TAG, "🟠 storeContract invalid payment base -> try ensurePublicKeyAvailable: pb=${contract.paymentBase.take(16)}...")
+        val ensured = walletManager.ensurePublicKeyAvailable(contract.paymentBase, maxTries = 2000)
+        if (!ensured) {
+            Log.e(TAG, "❌ ensurePublicKeyAvailable failed: pb=${contract.paymentBase.take(16)}...")
+            return false
+        }
+
+        val second = runCatching { walletManager.storeContract(contract) }
+        if (second.isSuccess) {
+            Log.d(TAG, "✅ storeContract OK after ensure: contractId=${contract.contractId}")
+            return true
+        }
+
+        val e2 = second.exceptionOrNull()
+        val msg2 = e2?.message.orEmpty()
+
+        if (msg2.contains("already exists", ignoreCase = true)) {
+            Log.w(TAG, "🟡 storeContract already exists after ensure -> treated as OK: contractId=${contract.contractId}")
+            return true
+        }
+
+        Log.e(TAG, "🔴 storeContract retry failed: ${e2?.message}", e2)
+        return false
+    }
+
+    /**
+     * ✅ Swift版の payable=true 相当（= 受領/claim）を Android で確実に再現するためのワークアラウンド。
+     *
+     * tapyrus-wallet 側の Contract/payable が残高計算に即反映されない場合があるため、
+     * P2C アドレス上の unspent UTXO を自分の通常アドレスへ sweep（自己送金）して
+     * 「通常UTXO」に変換し、残高へ確実に取り込む。
+     *
+     * - paymentBases: 自分の公開鍵候補（derived/trustlayer）
+     * - contract: P2C計算に使う契約文字列（chosen.contract と同一）
+     * - transactions: 受信側が参照できる raw transaction(JSON/hex) 文字列のリスト
+     */
+    private suspend fun claimP2cUtxosToSelf(
+        walletManager: WalletManager,
+        paymentBases: List<String>,
+        contract: String,
+        transactions: List<String>,
+        colorId: String
+    ): Pair<String, ULong> {
+
+        if (paymentBases.isEmpty()) throw IllegalArgumentException("paymentBases is empty")
+        if (transactions.isEmpty()) throw IllegalArgumentException("transactions is empty")
+
+        var bestUtxos: List<com.chaintope.tapyrus.wallet.TxOut> = emptyList()
+        var bestTotal: ULong = 0UL
+
+        for (pb in paymentBases) {
+            val p2c = walletManager.generateP2CAddress(
+                publicKey = pb,
+                contract = contract,
+                colorId = colorId
+            )
+
+            val utxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
+            var total = 0UL
+
+            for (tx in transactions) {
+                val outs = walletManager.getTxOutByAddress(tx = tx, address = p2c)
+                outs.filter { it.unspent }.forEach { out ->
+                    utxos.add(out)
+                    total += out.amount.toULong()
                 }
             }
+
+            Log.d(TAG, "[CLAIM] candidate p2c=$p2c total=$total (pb=${pb.take(16)}..., contract=$contract)")
+
+            if (total > bestTotal) {
+                bestTotal = total
+                bestUtxos = utxos
+            }
         }
+
+        if (bestTotal == 0UL || bestUtxos.isEmpty()) {
+            throw IllegalStateException("No unspent outputs found for claim")
+        }
+
+        val selfAddress = walletManager.getNewAddress(colorId = colorId)
+        Log.d(TAG, "[CLAIM] sweep to selfAddress=$selfAddress amount=$bestTotal utxos=${bestUtxos.size}")
+
+        val txid = walletManager.transferToken(
+            toAddress = selfAddress,
+            amount = bestTotal,
+            colorId = colorId,
+            utxos = bestUtxos
+        )
+
+        return txid to bestTotal
     }
 
     /**
@@ -280,10 +400,7 @@ object ShareProcessor {
 
         try {
             val refundTask = db.refundTaskDao().findByShareId(uuid)
-            if (refundTask == null) {
-                Log.e(TAG, "❌ Refund task not found")
-                return@withContext RefundResult.Error("返金情報が見つかりません")
-            }
+                ?: return@withContext RefundResult.Error("返金情報が見つかりません")
 
             val contextJson = JSONObject(refundTask.contextJSON ?: "{}")
             val transactions = mutableListOf<Pair<String, String>>()
@@ -293,10 +410,8 @@ object ShareProcessor {
                 transactions.add(txObj.getString("txid") to txObj.getString("transaction"))
             }
 
-            // ✅ refund時も contractId 文字列で統一（ズレ回避）
             val contractStr = contractId.ifBlank { "shared-file-$uuid" }
 
-            // paymentBase候補
             val myKeyEntity = db.myPublicKeyDao().getPrimary()
             val derived = myKeyEntity?.derivedPublicKey
             val trustLayer = myKeyEntity?.trustLayerPublicKey
@@ -305,12 +420,8 @@ object ShareProcessor {
                 trustLayer?.takeIf { it.isNotBlank() }
             ).distinct()
 
-            if (paymentBases.isEmpty()) {
-                return@withContext RefundResult.Error("公開鍵が未登録です")
-            }
+            if (paymentBases.isEmpty()) return@withContext RefundResult.Error("公開鍵が未登録です")
 
-            // ✅ UTXOが取れるP2Cを選ぶ
-            var chosenAddress: String? = null
             var chosenUtxos = mutableListOf<com.chaintope.tapyrus.wallet.TxOut>()
             var chosenTotal = 0UL
 
@@ -335,12 +446,10 @@ object ShareProcessor {
                 if (totalAmount > chosenTotal) {
                     chosenTotal = totalAmount
                     chosenUtxos = utxos
-                    chosenAddress = p2c
                 }
             }
 
-            if (chosenAddress == null || chosenUtxos.isEmpty()) {
-                Log.w(TAG, "⚠️ No UTXOs available for refund")
+            if (chosenUtxos.isEmpty() || chosenTotal == 0UL) {
                 return@withContext RefundResult.Error("返金可能な出力がありません")
             }
 
@@ -354,8 +463,6 @@ object ShareProcessor {
             Log.d(TAG, "✅ Refund success: txid=$txid, amount=$chosenTotal")
 
             walletManager.sync()
-
-            // RefundTask削除（※あなたの実装に合わせている）
             db.refundTaskDao().deleteByShareId(uuid)
 
             return@withContext RefundResult.Success(txid, chosenTotal)
@@ -367,26 +474,78 @@ object ShareProcessor {
     }
 
     /**
-     * 返金拒否処理
+     * 返金拒否処理（payable=true → 残高反映。反映されない場合は claim で確実に取り込む）
      */
     suspend fun declineRefund(
         context: Context,
         uuid: String,
         contractId: String,
-        senderPublicKey: String
+        senderPublicKey: String,
+        colorId: String = Constants.Strings.tokenColorId
     ): RefundResult = withContext(Dispatchers.IO) {
 
-        Log.d(TAG, "🚫 declineRefund: uuid=$uuid")
+        Log.d(TAG, "🚫 declineRefund: uuid=$uuid contractId=$contractId")
 
         val walletManager = WalletManager.getInstance(context)
         val db = AppDatabase.getDatabase(context)
 
         try {
+            // まず refundTask を読む（transactions があるなら claim に使う）
+            val refundTask = db.refundTaskDao().findByShareId(uuid)
+            val transactions: List<String> = if (refundTask != null) {
+                val contextJson = JSONObject(refundTask.contextJSON ?: "{}")
+                val txArray = contextJson.optJSONArray("transactions") ?: JSONArray()
+                buildList {
+                    for (i in 0 until txArray.length()) {
+                        val txObj = txArray.getJSONObject(i)
+                        add(txObj.getString("transaction"))
+                    }
+                }
+            } else {
+                emptyList()
+            }
+
+            runCatching {
+                val before = walletManager.getBalance(colorId = colorId)
+                Log.d(TAG, "[CLAIM] before payable=true balance(colorId)=$before")
+            }
+
             walletManager.updateContractPayable(contractId, payable = true)
+            walletManager.sync()
+
+            // ✅ それでも残高に入らない場合があるため、P2C UTXO を自分の通常アドレスへ sweep
+            if (transactions.isNotEmpty()) {
+                val myKeyEntity = db.myPublicKeyDao().getPrimary()
+                val derived = myKeyEntity?.derivedPublicKey
+                val trustLayer = myKeyEntity?.trustLayerPublicKey
+                val paymentBases = listOfNotNull(
+                    derived?.takeIf { it.isNotBlank() },
+                    trustLayer?.takeIf { it.isNotBlank() }
+                ).distinct()
+
+                runCatching {
+                    val (claimTxid, claimAmount) = claimP2cUtxosToSelf(
+                        walletManager = walletManager,
+                        paymentBases = paymentBases,
+                        contract = contractId,
+                        transactions = transactions,
+                        colorId = colorId
+                    )
+                    Log.d(TAG, "[CLAIM] declineRefund claimTxid=$claimTxid amount=$claimAmount")
+                }.onFailure { e ->
+                    Log.w(TAG, "[CLAIM] declineRefund sweep failed (continue): ${e.message}")
+                }
+
+                walletManager.sync()
+            }
 
             registerFraudulentSender(context, senderPublicKey, "Refund declined by recipient")
-
             db.refundTaskDao().deleteByShareId(uuid)
+
+            runCatching {
+                val after = walletManager.getBalance(colorId = colorId)
+                Log.d(TAG, "[CLAIM] after decline balance(colorId)=$after")
+            }
 
             Log.d(TAG, "✅ Refund declined and sender blocked")
             return@withContext RefundResult.Declined
@@ -509,8 +668,7 @@ object ShareProcessor {
     }
 
     private fun nowIsoString(): String {
-        val formatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
-            .withZone(ZoneId.systemDefault())
+        val formatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault())
         return formatter.format(Instant.now())
     }
 }

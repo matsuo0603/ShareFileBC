@@ -7,7 +7,6 @@ import android.util.Log
 import com.example.sharefilebc.crypto.SecurePackage
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.EmailKeyEntity
-import com.example.sharefilebc.data.MyPublicKeyEntity
 import com.example.sharefilebc.data.SharedFolderEntity
 import com.example.sharefilebc.data.UserEntity
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -80,8 +79,11 @@ class DriveUploader(private val context: Context) {
 
                 val dateFolderId = getOrCreateFolder(driveService, currentDate, recipientFolderId)
 
+                // ✅ P2C の paymentBase は Tapyrus HdWallet が発行した公開鍵である必要がある
+                // （KeyDerivation の鍵を混ぜると受信側で storeContract が invalid payment base になり得る）
+                WalletManager.getInstance(context).initializeIfNeeded()
+
                 val wallet = KeyDerivation.getInstance(context)
-                resolveMyKeys(db, wallet) // DBに自分の鍵を保存・更新
 
                 // ✅ 重要：送信直前にDBから相手鍵を取り直す（Swift版寄せ）
                 val emailKeyDao = db.emailKeyDao()
@@ -180,27 +182,9 @@ class DriveUploader(private val context: Context) {
         }
     }
 
-    private suspend fun resolveMyKeys(
-        db: AppDatabase,
-        wallet: KeyDerivation
-    ): Pair<String, String> {
-        val myKeyDao = db.myPublicKeyDao()
-        val existing = myKeyDao.getPrimary()
-        val trustLayer = existing?.trustLayerPublicKey
-            ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
-        val derived = existing?.derivedPublicKey
-            ?: wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
-
-        if (existing == null || existing.trustLayerPublicKey != trustLayer || existing.derivedPublicKey != derived) {
-            myKeyDao.upsert(
-                MyPublicKeyEntity(
-                    trustLayerPublicKey = trustLayer,
-                    derivedPublicKey = derived
-                )
-            )
-        }
-        return trustLayer to derived
-    }
+    // 以前はここで KeyDerivation の公開鍵を my_public_keys に書き込んでいたが、
+    // それだと Tapyrus HdWallet の鍵と世代がズレて受信側の storeContract が失敗する。
+    // 現在は WalletManager.initializeIfNeeded() 内の ensureMyPublicKeyExists() に一元化している。
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {
         val existing = drive.files().list()

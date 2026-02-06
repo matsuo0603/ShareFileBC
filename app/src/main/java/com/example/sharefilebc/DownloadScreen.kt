@@ -32,6 +32,7 @@ import com.example.sharefilebc.data.SharePaymentEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import kotlinx.coroutines.launch
+import com.google.android.gms.auth.api.signin.GoogleSignIn
 
 private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
 
@@ -146,6 +147,13 @@ fun DownloadScreen(
     val senderGroups = remember(receivedFolders, users) {
         buildSenderSummaries(receivedFolders, users)
     }
+    LaunchedEffect(receivedFolders) {
+        Log.d("DownloadScreen", "📦 receivedFolders.size=${receivedFolders.size}")
+        if (receivedFolders.isNotEmpty()) {
+            val head = receivedFolders.take(3).joinToString { "${it.senderName}/${it.folderName}" }
+            Log.d("DownloadScreen", "📦 receivedFolders(head3)=$head")
+        }
+    }
 
     LaunchedEffect(senderGroups) {
         if (selectedSender != null && senderGroups.none { it.senderName == selectedSender }) {
@@ -173,7 +181,7 @@ fun DownloadScreen(
 
         Log.d(
             "DownloadScreen",
-            "DeepLink(display-only): folder=$initialFolderId file=$initialFileId uuid=$deepLinkUuid txid=${deepLinkTxid?.take(8)}..."
+            "DeepLink(display-only): folder=$initialFolderId file=$initialFileId uuid=$deepLinkUuid txid=${deepLinkTxid?.take(8)}... senderPub=${deepLinkSenderPublicKey?.take(8)}..."
         )
 
         // folderId が Room に存在するなら、その sender を開く
@@ -217,7 +225,14 @@ fun DownloadScreen(
             for (folderId in dateGroup.folderIds) {
                 val structure = downloader.getFolderStructure(folderId)
                 if (structure == null) {
-                    needsLogin = true
+                    // null の原因が「ログイン切れ」なのか「権限/共有未反映」なのかを区別する
+                    val signedIn = GoogleSignIn.getLastSignedInAccount(context) != null
+                    if (!signedIn) {
+                        needsLogin = true
+                        Log.w("DownloadScreen", "⚠️ getFolderStructure=null (need login) folderId=$folderId")
+                    } else {
+                            Log.w("DownloadScreen", "⚠️ getFolderStructure=null (signed-in) folderId=$folderId")
+                        }
                     continue
                 }
                 structures += structure
@@ -280,33 +295,32 @@ fun DownloadScreen(
             isPaid = isPaid,
             isUnderpaid = isUnderpaid
         )
-    } else {
-        null
-    }
+    } else null
 
     val onPayAndDownload: (() -> Unit)? = if (paymentInfo != null) {
         val action: () -> Unit = action@{
             if (isPaying) return@action
-            val fileId = initialFileId
-            val folderId = initialFolderId
-            if (fileId == null || folderId == null) {
+            val fileId: String = initialFileId ?: run {
                 Toast.makeText(context, "共有情報が不足しています", Toast.LENGTH_LONG).show()
                 return@action
             }
-            val senderAddress = paymentInfo.senderAddress
-            val threshold = paymentInfo.threshold
+            val folderId: String = initialFolderId ?: run {
+                Toast.makeText(context, "共有情報が不足しています", Toast.LENGTH_LONG).show()
+                return@action
+            }
+
             coroutineScope.launch {
                 isPaying = true
                 val paymentResult = runCatching {
                     walletManager.sync()
                     val payerRefundAddress = walletManager.getNewAddress()
-                    val paidAmount = threshold
-                    val txid = walletManager.transfer(senderAddress, paidAmount)
+                    val paidAmount = paymentInfo.threshold
+                    val txid = walletManager.transfer(paymentInfo.senderAddress, paidAmount)
                     walletManager.sync()
                     val balance = walletManager.getBalance()
                     walletSettingsManager.setLastKnownBalance(balance)
 
-                    val result = if (paidAmount >= threshold) "PAID" else "UNDERPAID"
+                    val result = if (paidAmount >= paymentInfo.threshold) "PAID" else "UNDERPAID"
                     sharePaymentDao.insert(
                         SharePaymentEntity(
                             fileId = fileId,
@@ -318,7 +332,6 @@ fun DownloadScreen(
                             result = result
                         )
                     )
-
                     if (fileId.isNotBlank() && result == "PAID") {
                         downloader.downloadFile(fileId)
                     }
@@ -335,9 +348,7 @@ fun DownloadScreen(
             }
         }
         action
-    } else {
-        null
-    }
+    } else null
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -353,11 +364,9 @@ fun DownloadScreen(
 
             ReceivedProcessingSummaryCard(
                 receivedCount = receivedFiles.size,
-                refundPendingCount = refundTasks.size,
+                refundPendingCount = refundTasks.count { (it.status ?: "PENDING") == "PENDING" },
                 recentShareIds = receivedFiles.mapNotNull { it.shareID }.distinct().take(3)
             )
-
-
 
             if (senderGroups.isEmpty()) {
                 Box(
@@ -381,6 +390,61 @@ fun DownloadScreen(
                         modifier = Modifier.weight(1f),
                         detail = detailState!!,
                         onBack = { selectedSender = null },
+                        refundTasks = refundTasks,
+                        onRefundOrDecline = { task, doRefund ->
+                            coroutineScope.launch {
+                                val shareId = task.shareID
+                                val senderPubKey = task.senderPublicKey
+                                if (shareId.isNullOrBlank()) {
+                                    Toast.makeText(context, "shareID が不正です", Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+
+                                val contextJson = runCatching { JSONObject(task.contextJSON ?: "{}") }.getOrNull()
+                                val contractId = contextJson?.optString("contractId")?.takeIf { it.isNotBlank() }
+                                val refundAddress = contextJson?.optString("refundAddress")?.takeIf { it.isNotBlank() }
+
+                                if (contractId.isNullOrBlank()) {
+                                    Toast.makeText(context, "contractId が不足しています", Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+
+                                isLoading = true
+                                val result = if (doRefund) {
+                                    if (refundAddress.isNullOrBlank()) {
+                                        isLoading = false
+                                        Toast.makeText(context, "refundAddress が不足しています", Toast.LENGTH_LONG).show()
+                                        return@launch
+                                    }
+                                    ShareProcessor.refundShare(
+                                        context = context,
+                                        uuid = shareId,
+                                        contractId = contractId,
+                                        refundAddress = refundAddress
+                                    )
+                                } else {
+                                    if (senderPubKey.isNullOrBlank()) {
+                                        isLoading = false
+                                        Toast.makeText(context, "senderPublicKey が不足しています", Toast.LENGTH_LONG).show()
+                                        return@launch
+                                    }
+                                    ShareProcessor.declineRefund(
+                                        context = context,
+                                        uuid = shareId,
+                                        contractId = contractId,
+                                        senderPublicKey = senderPubKey
+                                    )
+                                }
+                                isLoading = false
+
+                                when (result) {
+                                    is RefundResult.Success -> Toast.makeText(context, "返金送信しました: ${result.txid}", Toast.LENGTH_LONG).show()
+                                    RefundResult.Declined -> Toast.makeText(context, "受領しました（残高反映のため同期します）", Toast.LENGTH_LONG).show()
+                                    is RefundResult.Error -> Toast.makeText(context, "失敗: ${result.message}", Toast.LENGTH_LONG).show()
+                                    else -> Toast.makeText(context, "結果: $result", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
                         paymentInfo = paymentInfo,
                         isPaying = isPaying,
                         canDownload = canDownload,
@@ -452,7 +516,7 @@ private fun buildSenderSummaries(
                 }
             }
 
-            val latestUpload = dateGroups.maxOfOrNull { it.displayUpload }.orEmpty()
+            val latestUpload = dateGroups.firstOrNull()?.displayUpload ?: ""
 
             ReceivedSenderSummaryUi(
                 senderName = senderName,
@@ -467,22 +531,25 @@ private fun buildSenderSummaries(
 
 @Composable
 private fun LoginRequiredCard(onLogin: () -> Unit) {
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Google ログインまたは Drive 権限が必要です。",
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = onLogin, modifier = Modifier.padding(top = 8.dp)) {
-                Text("ログインへ")
-            }
+        Text(
+            text = "Googleアカウントのログインが必要です",
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onErrorContainer
+        )
+        Button(
+            onClick = onLogin,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Text("ログインへ")
         }
     }
 }
@@ -494,53 +561,47 @@ private fun ReceivedSenderList(
     onSelect: (ReceivedSenderSummaryUi) -> Unit
 ) {
     LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 96.dp)
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp)
     ) {
-        items(groups, key = { it.senderName }) { group ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .clickable { onSelect(group) },
-                color = SharedScreenColors.UserCardBackground,
-                shape = RoundedCornerShape(16.dp),
-                tonalElevation = 0.dp,
-                shadowElevation = 2.dp,
-                border = BorderStroke(1.dp, SharedScreenColors.UserCardBorder)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = group.senderName.ifBlank { "不明なユーザー" },
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        group.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
-                            Text(
-                                text = email,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SharedScreenColors.UserEmail
-                            )
-                        }
-                    }
-                    Icon(
-                        imageVector = Icons.Outlined.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+        items(groups, key = { it.senderName }) { sender ->
+            SenderRowCard(sender = sender, onClick = { onSelect(sender) })
+        }
+    }
+}
+
+@Composable
+private fun SenderRowCard(sender: ReceivedSenderSummaryUi, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(SharedScreenColors.UserCardBackground)
+            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = sender.senderName.ifBlank { "不明なユーザー" },
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            sender.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
+                Text(
+                    text = email,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SharedScreenColors.UserEmail
+                )
             }
         }
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = "詳細へ",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -549,99 +610,246 @@ private fun ReceivedSenderDetail(
     modifier: Modifier,
     detail: ReceivedSenderDetailUi,
     onBack: () -> Unit,
+    refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
+    onRefundOrDecline: (com.example.sharefilebc.data.RefundTaskEntity, Boolean) -> Unit,
     paymentInfo: PaymentInfoUi?,
     isPaying: Boolean,
     canDownload: Boolean,
     onPayAndDownload: (() -> Unit)?,
     onDownload: (String) -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onBack() }
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.ChevronLeft,
-                    contentDescription = "戻る",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "共有ファイル",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Spacer(modifier = Modifier.width(4.dp))
-            Column {
-                Text(
-                    text = detail.senderName.ifBlank { "不明なユーザー" },
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                detail.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
+    val pendingRefunds = remember(refundTasks) {
+        refundTasks.filter { (it.status ?: "PENDING") == "PENDING" }
+    }
+
+    var showRefundDialog by remember { mutableStateOf(false) }
+    var selectedRefundTask by remember { mutableStateOf<com.example.sharefilebc.data.RefundTaskEntity?>(null) }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onBack() }
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronLeft,
+                        contentDescription = "戻る",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = email,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SharedScreenColors.UserEmail
+                        text = "共有ファイル",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
+                Spacer(modifier = Modifier.width(4.dp))
+                Column {
+                    Text(
+                        text = detail.senderName.ifBlank { "不明なユーザー" },
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    detail.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
+                        Text(
+                            text = email,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SharedScreenColors.UserEmail
+                        )
+                    }
+                }
             }
-        }
 
-        if (paymentInfo != null) {
-            PaymentInfoCard(
-                info = paymentInfo,
-                isPaying = isPaying,
-                onPayAndDownload = onPayAndDownload
+            if (paymentInfo != null) {
+                PaymentInfoCard(
+                    info = paymentInfo,
+                    isPaying = isPaying,
+                    onPayAndDownload = onPayAndDownload
+                )
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(bottom = 156.dp)
+            ) {
+                detail.dateGroups.forEach { group ->
+                    item(key = "header-${group.dateLabel}") {
+                        Text(
+                            text = group.dateLabel,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = SharedScreenColors.DateLabel,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+                    items(group.files, key = { it.id }) { file ->
+                        ReceivedFileItem(
+                            file = file,
+                            downloadEnabled = canDownload,
+                            onDownload = onDownload
+                        )
+                    }
+                }
+            }
+
+            RefundManagementCard(
+                pendingRefundCount = pendingRefunds.size,
+                task = pendingRefunds.firstOrNull(),
+                onOpenDialog = {
+                    selectedRefundTask = pendingRefunds.firstOrNull()
+                    showRefundDialog = selectedRefundTask != null
+                }
             )
         }
 
-        if (detail.dateGroups.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "表示できるファイルがありません",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+        if (showRefundDialog) {
+            val task = selectedRefundTask
+            if (task != null) {
+                RefundDecisionDialog(
+                    onRefund = {
+                        showRefundDialog = false
+                        onRefundOrDecline(task, true)
+                    },
+                    onDecline = {
+                        showRefundDialog = false
+                        onRefundOrDecline(task, false)
+                    },
+                    onCancel = {
+                        showRefundDialog = false
+                    }
                 )
-            }
-            return@Column
-        }
-
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(bottom = 96.dp)
-        ) {
-            detail.dateGroups.forEach { group ->
-                item(key = "header-${group.dateLabel}") {
-                    Text(
-                        text = group.dateLabel,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = SharedScreenColors.DateLabel,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                }
-                items(group.files, key = { it.id }) { file ->
-                    ReceivedFileItem(
-                        file = file,
-                        downloadEnabled = canDownload,
-                        onDownload = onDownload
-                    )
-                }
+            } else {
+                showRefundDialog = false
             }
         }
     }
+}
+
+@Composable
+private fun RefundManagementCard(
+    pendingRefundCount: Int,
+    task: com.example.sharefilebc.data.RefundTaskEntity?,
+    onOpenDialog: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(SharedScreenColors.UserCardBackground)
+            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "返金管理",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onBackground
+        )
+
+        if (pendingRefundCount <= 0 || task == null) {
+            Text(
+                text = "返金対象の共有はありません",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { /* disabled */ },
+                enabled = false,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Text("返金確認")
+            }
+            return
+        }
+
+        val contextJson = runCatching { JSONObject(task.contextJSON ?: "{}") }.getOrNull()
+        val detectedAmount = task.detectedAmount?.toString()
+            ?: contextJson?.optLong("amount")?.toString()
+            ?: "?"
+        val threshold = task.paymentThreshold?.toString()
+            ?: contextJson?.optLong("threshold")?.toString()
+            ?: "?"
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "共有 $pendingRefundCount",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "受信した送金量: $detectedAmount",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "閾値: $threshold",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Button(
+            onClick = onOpenDialog,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            // ✅ 既存の共通色パレットに PrimaryAction は無いので、iOSライクの青（Theme primary）を使う
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+        ) {
+            Text("返金確認")
+        }
+    }
+}
+
+@Composable
+private fun RefundDecisionDialog(
+    onRefund: () -> Unit,
+    onDecline: () -> Unit,
+    onCancel: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = {
+            Text(
+                text = "返金の確認",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+            )
+        },
+        text = {
+            Text(
+                text = "返金の可否を選択してください。\n相手が信頼できない場合は『返金しない』を選択してください。",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onRefund) {
+                Text("返金する", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDecline) {
+                    Text("返金しない", color = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = onCancel) {
+                    Text("キャンセル")
+                }
+            }
+        }
+    )
 }
 
 @Composable
@@ -799,3 +1007,81 @@ private fun ReceivedProcessingSummaryCard(
     }
 }
 
+@Composable
+private fun RefundPendingListCard(
+    refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
+    onRefund: (com.example.sharefilebc.data.RefundTaskEntity) -> Unit,
+    onDecline: (com.example.sharefilebc.data.RefundTaskEntity) -> Unit
+) {
+    val pending = remember(refundTasks) {
+        refundTasks.filter { (it.status ?: "PENDING") == "PENDING" }
+    }
+
+    if (pending.isEmpty()) return
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "返金待ち（確認が必要）",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            pending.forEach { task ->
+                val shareId = task.shareID ?: ""
+                val amount = task.detectedAmount
+                val contractId = runCatching {
+                    JSONObject(task.contextJSON ?: "{}").optString("contractId")
+                }.getOrNull().orEmpty()
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "shareID: ${shareId.take(20)}${if (shareId.length > 20) "..." else ""}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (contractId.isNotBlank()) {
+                            Text(
+                                text = "contractId: ${contractId.take(20)}${if (contractId.length > 20) "..." else ""}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (amount != null) {
+                            Text(
+                                text = "検出額: $amount",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                onClick = { onRefund(task) }
+                            ) {
+                                Text("返金する")
+                            }
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                onClick = { onDecline(task) }
+                            ) {
+                                Text("返金しない")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

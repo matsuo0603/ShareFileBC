@@ -199,6 +199,38 @@ class WalletManager private constructor(
         return w.storeContract(contract = contract)
     }
 
+    /**
+     * paymentBase(publicKeyHex) が wallet 側で「自分の鍵として認識」されていないと
+     * storeContract が `invalid payment base` で失敗する。
+     *
+     * その原因の大半は、
+     * - tapyrus_wallet.db を削除した/初期化し直した
+     * - しかし共有相手に渡した paymentBase は「過去に発行した受取鍵（アドレスインデックスが進んだ状態）」
+     *
+     * という “インデックスのズレ” で、wallet 側が該当公開鍵をまだ生成/登録していないこと。
+     *
+     * そこで、この関数では getNewAddressWithPublicKey() を繰り返してインデックスを進め、
+     * 目的の publicKeyHex が出るまで wallet の鍵プールを前進させる。
+     *
+     * NOTE:
+     * - maxTries 以上回しても一致しない場合は false
+     */
+    fun ensurePublicKeyAvailable(publicKeyHex: String, maxTries: Int = 50): Boolean {
+        val target = publicKeyHex.trim()
+        if (target.isBlank()) return false
+
+        for (i in 0 until maxTries) {
+            val (_, pub) = getNewAddressWithPublicKey(colorId = null)
+            if (pub.equals(target, ignoreCase = true)) {
+                Log.d(tag, "✅ ensurePublicKeyAvailable: matched at i=$i pub=${pub.take(16)}...")
+                return true
+            }
+        }
+
+        Log.e(tag, "❌ ensurePublicKeyAvailable: not found within maxTries=$maxTries target=${target.take(16)}...")
+        return false
+    }
+
     fun updateContractPayable(contractId: String, payable: Boolean) {
         val w = wallet ?: throw IllegalStateException("Wallet not initialized")
         w.updateContract(contractId = contractId, payable = payable)
