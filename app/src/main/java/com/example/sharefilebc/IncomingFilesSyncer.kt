@@ -39,6 +39,17 @@ object IncomingFilesSyncer {
     suspend fun syncOnce(context: Context): Int = withContext(Dispatchers.IO) {
         Log.d(LogTags.TAG_SYNC_INCOMING, "start")
 
+        // ✅ Drive 同期の有無に関わらず、ウォレットは定期的に同期しておく。
+        // 返金は「相手から自分のアドレスへの通常送金」なので、
+        // 受信側（送信者側）が何も操作しなくても WorkManager 経由で反映できる。
+        runCatching {
+            val wm = WalletManager.getInstance(context)
+            wm.initializeIfNeeded()
+            wm.sync()
+        }.onFailure {
+            Log.w(LogTags.TAG_SYNC_INCOMING, "wallet sync skipped: ${it.message}")
+        }
+
         val drive = runCatching { DriveServiceHelper.getDriveService(context) }
             .onFailure { Log.e(LogTags.TAG_SYNC_INCOMING, "Drive 取得失敗", it) }
             .getOrNull() ?: return@withContext 0
@@ -118,7 +129,16 @@ object IncomingFilesSyncer {
             val desc = f.description?.trim().orEmpty()
             if (desc.isBlank()) continue
 
-            val meta = parseShareMeta(desc) ?: continue
+            // ✅ threshold が description に入っていない/壊れているケースがあり、0 だと
+            // UIで「閾値: 0」と誤表示されやすい。
+            // Swift版は paymentThreshold のデフォルトが 1 なので、Androidも同じく
+            // WalletSettings の値をデフォルトとして補完する。
+            val defaultThreshold = WalletSettingsManager
+                .getInstance(context)
+                .getPaymentThreshold()
+                .toLong()
+
+            val meta = parseShareMeta(desc, defaultThreshold) ?: continue
 
             Log.d(
                 LogTags.TAG_SYNC_INCOMING,
@@ -135,6 +155,13 @@ object IncomingFilesSyncer {
             )
 
             Log.d(LogTags.TAG_SYNC_INCOMING, "🔁 auto processReceivedShare result=$result")
+
+            // ✅ 反映が遅い場合があるので、受信処理の直後にもう一度 sync→balance を取ってログに残す
+            runCatching {
+                val wm = WalletManager.getInstance(context)
+                val bal = wm.getBalanceAfterSync(colorId = Constants.Strings.tokenColorId)
+                Log.d(LogTags.TAG_SYNC_INCOMING, "[BALANCE] after auto processReceivedShare = $bal")
+            }
         }
     }
 
@@ -142,7 +169,7 @@ object IncomingFilesSyncer {
      * description 形式：
      *  uuid=...&txid=...&sender=...&threshold=...&refund=...
      */
-    private fun parseShareMeta(description: String): ShareMeta? {
+    private fun parseShareMeta(description: String, defaultThreshold: Long): ShareMeta? {
         return try {
             val q = description.removePrefix("?")
             val uri = Uri.parse("https://dummy.local/?$q")
@@ -154,7 +181,12 @@ object IncomingFilesSyncer {
                 .orEmpty()
 
             val thresholdStr = uri.getQueryParameter("threshold")?.trim().orEmpty()
-            val threshold = thresholdStr.toULongOrNull() ?: 0uL
+            val thresholdParsed = thresholdStr.toLongOrNull()
+            val threshold = when {
+                thresholdParsed == null -> defaultThreshold
+                thresholdParsed <= 0L -> defaultThreshold
+                else -> thresholdParsed
+            }.toULong()
 
             val refund = (uri.getQueryParameter("refund") ?: uri.getQueryParameter("refundAddress"))
                 ?.trim()

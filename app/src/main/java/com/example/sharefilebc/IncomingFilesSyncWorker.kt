@@ -19,6 +19,11 @@ class IncomingFilesSyncWorker(
     override suspend fun doWork(): Result {
         Log.d(LogTags.TAG_SYNC_INCOMING, "worker start")
         return try {
+            // ✅ 自動受信ルートはアプリ起動外でも走る。
+            // Wallet が未初期化だと processReceivedShare 内で IllegalStateException("Wallet not initialized")
+            // になり、P2C検証/トークン反映が進まない。
+            WalletManager.getInstance(applicationContext).initializeIfNeeded()
+
             val count = IncomingFilesSyncer.syncOnce(applicationContext)
             Log.d(LogTags.TAG_SYNC_INCOMING, "worker done upsert=$count")
             Result.success()

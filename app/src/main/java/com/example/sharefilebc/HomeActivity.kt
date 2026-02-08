@@ -10,8 +10,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
@@ -179,6 +181,51 @@ class HomeActivity : ComponentActivity() {
             ShareFileBCTheme {
                 var selectedTab by selectedTabState
                 val deepLinkParams by deepLinkParamsState
+
+                val composeScope = rememberCoroutineScope()
+
+                // ✅ 返金管理「閾値: 0」対策（既存DB互換）
+                // 過去に paymentThreshold を保存していない RefundTask が残っている場合、
+                // UIが contextJSON の optLong("threshold") に落ちて 0 と表示されることがある。
+                // DownloadScreen は task.paymentThreshold を優先表示するため、ここで埋めれば
+                // 画面側を大改修しなくても 0 表示は消える。
+                LaunchedEffect(Unit) {
+                    composeScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            val db = AppDatabase.getDatabase(applicationContext)
+                            val defaultTh = WalletSettingsManager
+                                .getInstance(applicationContext)
+                                .getPaymentThreshold()
+                                .toLong()
+                            db.refundTaskDao().fillMissingThreshold(defaultTh)
+                        }.onFailure { e ->
+                            Log.w(TAG, "🟡 fillMissingThreshold failed (continue)", e)
+                        }
+                    }
+                }
+
+                // ✅ Shareタブを開くたびに「受信メタ同期 → wallet fullSync → balance取得」を走らせる
+                LaunchedEffect(selectedTab) {
+                    if (selectedTab != BottomTab.Shared) return@LaunchedEffect
+
+                    composeScope.launch {
+                        runCatching {
+                            IncomingFilesSyncer.syncOnce(applicationContext)
+                        }.onFailure { e ->
+                            Log.w(TAG, "🟡 IncomingFilesSyncer.syncOnce failed (continue)", e)
+                        }
+
+                        runCatching {
+                            val wm = WalletManager.getInstance(applicationContext)
+                            wm.initializeIfNeeded()
+                            val bal = wm.getBalanceAfterSync(colorId = Constants.Strings.tokenColorId)
+                            WalletSettingsManager.getInstance(applicationContext).setLastKnownBalance(bal)
+                            Log.d(TAG, "🟢 Shared tab refresh done. tokenBalance=$bal")
+                        }.onFailure { e ->
+                            Log.w(TAG, "🟡 Shared tab wallet refresh failed (continue)", e)
+                        }
+                    }
+                }
 
                 Scaffold(
                     bottomBar = {

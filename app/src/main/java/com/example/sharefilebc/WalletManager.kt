@@ -27,6 +27,7 @@ class WalletManager private constructor(
     private val tag = "WalletManager"
 
     private val initMutex = Mutex()
+    private val syncMutex = Mutex()
 
     companion object {
         @Volatile
@@ -113,9 +114,28 @@ class WalletManager private constructor(
     }
 
     suspend fun sync() = withContext(Dispatchers.IO) {
-        val w = wallet ?: throw IllegalStateException("Wallet not initialized")
-        w.fullSync()
-        Log.d(tag, "🔄 Wallet synced")
+        // ✅ fullSync の多重実行は不安定＆遅延の原因になりやすいので直列化
+        syncMutex.withLock {
+            val w = wallet ?: throw IllegalStateException("Wallet not initialized")
+            w.fullSync()
+            Log.d(tag, "[SYNC] 🔄 Wallet synced")
+        }
+    }
+
+    /**
+     * ✅ 「同期 → 残高取得」を順番保証で実行する。
+     * - 受信処理／返金反映の遅延が「syncとbalanceの順番競合」で起きるのを避ける。
+     */
+    suspend fun getBalanceAfterSync(colorId: String? = null): ULong = withContext(Dispatchers.IO) {
+        syncMutex.withLock {
+            val w = wallet ?: throw IllegalStateException("Wallet not initialized")
+            w.fullSync()
+            Log.d(tag, "[SYNC] 🔄 Wallet synced (for balance)")
+
+            val bal = w.balance(colorId = colorId)
+            Log.d(tag, "[BALANCE] ✅ balance(colorId=${colorId ?: "null"})=$bal")
+            bal
+        }
     }
 
     fun getNewAddressWithPublicKey(colorId: String? = null): Pair<String, String> {

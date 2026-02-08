@@ -35,4 +35,18 @@ interface RefundTaskDao {
 
     @Query("UPDATE refund_tasks SET status = :status WHERE shareID = :shareId")
     suspend fun markStatusByShareId(shareId: String, status: String)
+
+    /**
+     * ✅ 既存データ互換：過去に paymentThreshold が保存されていない（null/0）タスクがあると
+     * UIで「閾値: 0」と誤表示されやすい。
+     *
+     * DownloadScreen は task.paymentThreshold を優先表示するため、ここで埋めるだけで
+     * 画面側の修正なしに表示を矯正できる。
+     */
+    @Query(
+        "UPDATE refund_tasks " +
+                "SET paymentThreshold = :defaultThreshold " +
+                "WHERE paymentThreshold IS NULL OR paymentThreshold <= 0"
+    )
+    suspend fun fillMissingThreshold(defaultThreshold: Long)
 }

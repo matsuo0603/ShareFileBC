@@ -82,9 +82,13 @@ fun SharedScreen(
 
         val uuid = deepLinkUuid?.trim()
         val senderKey = deepLinkSenderPublicKey?.trim()
+        // ✅ Swift版は paymentThreshold がデフォルト 1（UserDefaults）
+        // Android側も deep link 側に threshold が無い/0 の場合は WalletSettings の値を使う。
         val threshold = deepLinkThreshold
+            ?.takeIf { it > 0uL }
+            ?: WalletSettingsManager.getInstance(context).getPaymentThreshold()
 
-        if (uuid.isNullOrBlank() || txidList.isEmpty() || senderKey.isNullOrBlank() || threshold == null) {
+        if (uuid.isNullOrBlank() || txidList.isEmpty() || senderKey.isNullOrBlank()) {
             Log.d(
                 DL_TAG,
                 "[SharedScreen] missing params uuid=$uuid txids=${txidList.size} senderKeyEmpty=${senderKey.isNullOrBlank()} threshold=$threshold"

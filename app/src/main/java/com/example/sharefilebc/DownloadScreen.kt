@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.example.sharefilebc
 
 import android.content.Intent
@@ -16,15 +18,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.data.BlockedSenderEntity
 import org.json.JSONObject
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
@@ -35,6 +41,14 @@ import kotlinx.coroutines.launch
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 
 private val DATE_REGEX = Regex("\\d{4}-\\d{2}-\\d{2}")
+
+// iOS（Grouped List / ActionSheet）っぽい見た目に寄せるための色
+private val IOS_GROUP_BG = Color(0xFFF2F2F7)
+private val IOS_SEPARATOR = Color(0xFFE5E5EA)
+private val IOS_BLUE = Color(0xFF007AFF)
+private val IOS_DESTRUCTIVE = Color(0xFFFF3B30)
+private val IOS_ORANGE = Color(0xFFFF9500)
+private val IOS_SECONDARY_TEXT = Color(0xFF8E8E93)
 
 private fun String.toDateOnly(): String = DATE_REGEX.find(this)?.value ?: this
 
@@ -50,7 +64,9 @@ private data class ReceivedSenderSummaryUi(
     val senderEmail: String?,
     val dateGroups: List<ReceivedDateGroupSummaryUi>,
     val cacheToken: String,
-    val latestUpload: String
+    val latestUpload: String,
+    val hasPendingRefund: Boolean,
+    val isBlocked: Boolean
 )
 
 private data class ReceivedFileItemUi(
@@ -103,11 +119,13 @@ fun DownloadScreen(
     val sharePaymentDao = remember { db.sharePaymentDao() }
     val receivedFileDao = remember { db.receivedFileDao() }
     val refundTaskDao = remember { db.refundTaskDao() }
+    val blockedSenderDao = remember { db.blockedSenderDao() }
 
     val receivedFolders by receivedDao.getAll().collectAsState(initial = emptyList())
     val users by userDao.getAll().collectAsState(initial = emptyList())
     val receivedFiles by receivedFileDao.observeAll().collectAsState(initial = emptyList())
     val refundTasks by refundTaskDao.observeAll().collectAsState(initial = emptyList())
+    val blockedSenders by blockedSenderDao.getAll().collectAsState(initial = emptyList())
 
 
     var isLoading by remember { mutableStateOf(false) }
@@ -144,8 +162,13 @@ fun DownloadScreen(
     val isUnderpaid = paymentRecord?.result == "UNDERPAID"
     val canDownload = !requiresPayment || isPaid
 
-    val senderGroups = remember(receivedFolders, users) {
-        buildSenderSummaries(receivedFolders, users)
+    val senderGroups = remember(receivedFolders, users, refundTasks, blockedSenders) {
+        buildSenderSummaries(
+            receivedFolders = receivedFolders,
+            users = users,
+            refundTasks = refundTasks,
+            blockedSenders = blockedSenders
+        )
     }
     LaunchedEffect(receivedFolders) {
         Log.d("DownloadScreen", "📦 receivedFolders.size=${receivedFolders.size}")
@@ -206,7 +229,6 @@ fun DownloadScreen(
             detailState = null
         }
     }
-
     LaunchedEffect(selectedSender, senderGroups) {
         val sender = selectedSender ?: return@LaunchedEffect
         val group = senderGroups.firstOrNull { it.senderName == sender } ?: return@LaunchedEffect
@@ -231,8 +253,8 @@ fun DownloadScreen(
                         needsLogin = true
                         Log.w("DownloadScreen", "⚠️ getFolderStructure=null (need login) folderId=$folderId")
                     } else {
-                            Log.w("DownloadScreen", "⚠️ getFolderStructure=null (signed-in) folderId=$folderId")
-                        }
+                        Log.w("DownloadScreen", "⚠️ getFolderStructure=null (signed-in) folderId=$folderId")
+                    }
                     continue
                 }
                 structures += structure
@@ -350,11 +372,15 @@ fun DownloadScreen(
         action
     } else null
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(IOS_GROUP_BG)
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 4.dp)
+                .padding(horizontal = 0.dp)
         ) {
             AnimatedVisibility(visible = needsLogin) {
                 LoginRequiredCard(onLogin = {
@@ -473,7 +499,7 @@ fun DownloadScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)),
+                    .background(Color.Black.copy(alpha = 0.18f)),
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
@@ -484,9 +510,21 @@ fun DownloadScreen(
 
 private fun buildSenderSummaries(
     receivedFolders: List<ReceivedFolderEntity>,
-    users: List<UserEntity>
+    users: List<UserEntity>,
+    refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
+    blockedSenders: List<com.example.sharefilebc.data.BlockedSenderEntity>
 ): List<ReceivedSenderSummaryUi> {
     val emailMap = users.associate { it.name to it.email }
+
+    // blocked_senders は email が主キー
+    val blockedEmailSet = blockedSenders.map { it.email }.toSet()
+
+    // 返金待ち（PENDING）の folderId を集める（relatedFolderId があれば senderName に紐付けできる）
+    val pendingRefundFolderIds: Set<String> = refundTasks
+        .asSequence()
+        .filter { (it.status ?: "PENDING") == "PENDING" }
+        .mapNotNull { it.relatedFolderId }
+        .toSet()
 
     return receivedFolders
         .groupBy { it.senderName }
@@ -518,17 +556,22 @@ private fun buildSenderSummaries(
 
             val latestUpload = dateGroups.firstOrNull()?.displayUpload ?: ""
 
+            val senderEmail = emailMap[senderName]
+            val isBlocked = senderEmail != null && blockedEmailSet.contains(senderEmail)
+            val hasPendingRefund = folders.any { pendingRefundFolderIds.contains(it.folderId) }
+
             ReceivedSenderSummaryUi(
                 senderName = senderName,
-                senderEmail = emailMap[senderName],
+                senderEmail = senderEmail,
                 dateGroups = dateGroups,
                 cacheToken = cacheToken,
-                latestUpload = latestUpload
+                latestUpload = latestUpload,
+                hasPendingRefund = hasPendingRefund,
+                isBlocked = isBlocked
             )
         }
         .sortedByDescending { it.latestUpload }
 }
-
 @Composable
 private fun LoginRequiredCard(onLogin: () -> Unit) {
     Column(
@@ -562,8 +605,8 @@ private fun ReceivedSenderList(
 ) {
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
     ) {
         items(groups, key = { it.senderName }) { sender ->
             SenderRowCard(sender = sender, onClick = { onSelect(sender) })
@@ -576,31 +619,50 @@ private fun SenderRowCard(sender: ReceivedSenderSummaryUi, onClick: () -> Unit) 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(SharedScreenColors.UserCardBackground)
-            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White)
+            .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(12.dp))
             .clickable { onClick() }
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = sender.senderName.ifBlank { "不明なユーザー" },
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onBackground
+                color = Color.Black
             )
             sender.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
                 Text(
                     text = email,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = SharedScreenColors.UserEmail
+                    color = IOS_SECONDARY_TEXT
                 )
             }
         }
+        // 送信元の状態表示（Swift版と同等）
+        // - 返金待ちあり: 黄色アイコン
+        // - 返金拒否リスト登録済み: 赤アイコン
+        if (sender.isBlocked) {
+            Icon(
+                imageVector = Icons.Outlined.ErrorOutline,
+                contentDescription = "返金拒否リスト登録済み",
+                tint = IOS_DESTRUCTIVE
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        } else if (sender.hasPendingRefund) {
+            Icon(
+                imageVector = Icons.Outlined.WarningAmber,
+                contentDescription = "返金対象の共有ファイルあり",
+                tint = IOS_ORANGE
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+
         Icon(
             imageVector = Icons.Outlined.ChevronRight,
             contentDescription = "詳細へ",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
+            tint = IOS_SECONDARY_TEXT
         )
     }
 }
@@ -625,11 +687,15 @@ private fun ReceivedSenderDetail(
     var showRefundDialog by remember { mutableStateOf(false) }
     var selectedRefundTask by remember { mutableStateOf<com.example.sharefilebc.data.RefundTaskEntity?>(null) }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(IOS_GROUP_BG)
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -643,13 +709,13 @@ private fun ReceivedSenderDetail(
                     Icon(
                         imageVector = Icons.Outlined.ChevronLeft,
                         contentDescription = "戻る",
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = IOS_BLUE
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = "共有ファイル",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = IOS_BLUE
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
@@ -657,13 +723,13 @@ private fun ReceivedSenderDetail(
                     Text(
                         text = detail.senderName.ifBlank { "不明なユーザー" },
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = Color.Black
                     )
                     detail.senderEmail?.takeIf { it.isNotBlank() }?.let { email ->
                         Text(
                             text = email,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = SharedScreenColors.UserEmail
+                            color = IOS_SECONDARY_TEXT
                         )
                     }
                 }
@@ -746,16 +812,16 @@ private fun RefundManagementCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(SharedScreenColors.UserCardBackground)
-            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(14.dp))
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
             text = "返金管理",
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.onBackground
+            color = Color.Black
         )
 
         if (pendingRefundCount <= 0 || task == null) {
@@ -768,7 +834,11 @@ private fun RefundManagementCard(
                 onClick = { /* disabled */ },
                 enabled = false,
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = IOS_SEPARATOR,
+                    disabledContentColor = IOS_SECONDARY_TEXT
+                )
             ) {
                 Text("返金確認")
             }
@@ -804,9 +874,8 @@ private fun RefundManagementCard(
         Button(
             onClick = onOpenDialog,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            // ✅ 既存の共通色パレットに PrimaryAction は無いので、iOSライクの青（Theme primary）を使う
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = IOS_BLUE)
         ) {
             Text("返金確認")
         }
@@ -819,37 +888,81 @@ private fun RefundDecisionDialog(
     onDecline: () -> Unit,
     onCancel: () -> Unit
 ) {
-    AlertDialog(
+    // Swift版の ActionSheet（下から出る）に寄せる
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
         onDismissRequest = onCancel,
-        title = {
-            Text(
-                text = "返金の確認",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-            )
-        },
-        text = {
-            Text(
-                text = "返金の可否を選択してください。\n相手が信頼できない場合は『返金しない』を選択してください。",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onRefund) {
-                Text("返金する", color = MaterialTheme.colorScheme.error)
+        sheetState = sheetState,
+        containerColor = IOS_GROUP_BG,
+        dragHandle = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // iOSのActionSheetは「説明テキスト + ボタン群」なので、カード風にまとめる
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "返金の確認",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = Color.Black
+                )
+                Text(
+                    text = "返金の可否を選択してください。\n相手が信頼できない場合は『返金しない』を選択してください。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IOS_SECONDARY_TEXT
+                )
             }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onDecline) {
-                    Text("返金しない", color = MaterialTheme.colorScheme.primary)
+
+            // ボタン群（返金する/返金しない）
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(14.dp))
+            ) {
+                TextButton(
+                    onClick = onRefund,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("返金する", color = IOS_DESTRUCTIVE, fontWeight = FontWeight.SemiBold)
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                TextButton(onClick = onCancel) {
-                    Text("キャンセル")
+                Divider(color = IOS_SEPARATOR)
+                TextButton(
+                    onClick = onDecline,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("返金しない", color = IOS_BLUE, fontWeight = FontWeight.SemiBold)
                 }
             }
+
+            // キャンセル（単独カード）
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(14.dp))
+            ) {
+                Text("キャンセル", color = IOS_BLUE, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
         }
-    )
+    }
 }
 
 @Composable
@@ -861,10 +974,10 @@ private fun ReceivedFileItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(SharedScreenColors.UserCardBackground)
-            .border(BorderStroke(1.dp, SharedScreenColors.UserCardBorder), RoundedCornerShape(16.dp))
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White)
+            .border(BorderStroke(1.dp, IOS_SEPARATOR), RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(
@@ -874,13 +987,13 @@ private fun ReceivedFileItem(
             Text(
                 text = file.fileName,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onBackground
+                color = Color.Black
             )
             if (file.deleteAt.isNotBlank()) {
                 Text(
                     text = "削除予定: ${file.deleteAt}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
+                    color = IOS_DESTRUCTIVE,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -892,11 +1005,7 @@ private fun ReceivedFileItem(
             Icon(
                 imageVector = Icons.Outlined.Download,
                 contentDescription = "ダウンロード",
-                tint = if (downloadEnabled) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                tint = if (downloadEnabled) IOS_BLUE else IOS_SECONDARY_TEXT
             )
         }
     }

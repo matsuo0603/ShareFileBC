@@ -241,7 +241,8 @@ object ShareProcessor {
                     refundAddress = refundAddress,
                     transactions = chosen.validTxs,
                     amount = chosen.total,
-                    senderPublicKey = senderPublicKey
+                    senderPublicKey = senderPublicKey,
+                    paymentThreshold = threshold
                 )
             }
 
@@ -254,65 +255,65 @@ object ShareProcessor {
         }
     }
 
-    /**
-     * ✅ storeContract は paymentBase が wallet 側で「自分の鍵として認識」されていないと
-     * `invalid payment base` で失敗する。
-     *
-     * その場合は WalletManager.ensurePublicKeyAvailable(paymentBase) で鍵プールを前進させてから
-     * 1回だけリトライする。
-     *
-     * @return true: 保存できた / すでに存在する（OK扱い）
-     *         false: どうしても保存できない（この共有は受領/返金できないので処理を止めるべき）
-     */
-    private fun storeContractBestEffort(walletManager: WalletManager, contract: Contract): Boolean {
-        // 1回目
-        val first = runCatching { walletManager.storeContract(contract) }
-        if (first.isSuccess) {
-            Log.d(TAG, "✅ storeContract OK: contractId=${contract.contractId}")
-            return true
-        }
+/**
+ * ✅ storeContract は paymentBase が wallet 側で「自分の鍵として認識」されていないと
+ * `invalid payment base` で失敗する。
+ *
+ * その場合は WalletManager.ensurePublicKeyAvailable(paymentBase) で鍵プールを前進させてから
+ * 1回だけリトライする。
+ *
+ * @return true: 保存できた / すでに存在する（OK扱い）
+ *         false: どうしても保存できない（この共有は受領/返金できないので処理を止めるべき）
+ */
+private fun storeContractBestEffort(walletManager: WalletManager, contract: Contract): Boolean {
+    // 1回目
+    val first = runCatching { walletManager.storeContract(contract) }
+    if (first.isSuccess) {
+        Log.d(TAG, "✅ storeContract OK: contractId=${contract.contractId}")
+        return true
+    }
 
-        val e1 = first.exceptionOrNull()
-        val msg1 = e1?.message.orEmpty()
+    val e1 = first.exceptionOrNull()
+    val msg1 = e1?.message.orEmpty()
 
-        // already exists は OK 扱い
-        if (msg1.contains("already exists", ignoreCase = true)) {
-            Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
-            return true
-        }
+    // already exists は OK 扱い
+    if (msg1.contains("already exists", ignoreCase = true)) {
+        Log.w(TAG, "🟡 storeContract already exists -> treated as OK: contractId=${contract.contractId}")
+        return true
+    }
 
-        // invalid payment base 以外は失敗（止める）
-        val invalidPb = msg1.contains("invalid payment base", ignoreCase = true)
-        if (!invalidPb) {
-            Log.e(TAG, "🔴 storeContract failed: ${e1?.message}", e1)
-            return false
-        }
-
-        // invalid payment base -> ensurePublicKeyAvailable して1回だけリトライ
-        Log.e(TAG, "🟠 storeContract invalid payment base -> try ensurePublicKeyAvailable: pb=${contract.paymentBase.take(16)}...")
-        val ensured = walletManager.ensurePublicKeyAvailable(contract.paymentBase, maxTries = 2000)
-        if (!ensured) {
-            Log.e(TAG, "❌ ensurePublicKeyAvailable failed: pb=${contract.paymentBase.take(16)}...")
-            return false
-        }
-
-        val second = runCatching { walletManager.storeContract(contract) }
-        if (second.isSuccess) {
-            Log.d(TAG, "✅ storeContract OK after ensure: contractId=${contract.contractId}")
-            return true
-        }
-
-        val e2 = second.exceptionOrNull()
-        val msg2 = e2?.message.orEmpty()
-
-        if (msg2.contains("already exists", ignoreCase = true)) {
-            Log.w(TAG, "🟡 storeContract already exists after ensure -> treated as OK: contractId=${contract.contractId}")
-            return true
-        }
-
-        Log.e(TAG, "🔴 storeContract retry failed: ${e2?.message}", e2)
+    // invalid payment base 以外は失敗（止める）
+    val invalidPb = msg1.contains("invalid payment base", ignoreCase = true)
+    if (!invalidPb) {
+        Log.e(TAG, "🔴 storeContract failed: ${e1?.message}", e1)
         return false
     }
+
+    // invalid payment base -> ensurePublicKeyAvailable して1回だけリトライ
+    Log.e(TAG, "🟠 storeContract invalid payment base -> try ensurePublicKeyAvailable: pb=${contract.paymentBase.take(16)}...")
+    val ensured = walletManager.ensurePublicKeyAvailable(contract.paymentBase, maxTries = 2000)
+    if (!ensured) {
+        Log.e(TAG, "❌ ensurePublicKeyAvailable failed: pb=${contract.paymentBase.take(16)}...")
+        return false
+    }
+
+    val second = runCatching { walletManager.storeContract(contract) }
+    if (second.isSuccess) {
+        Log.d(TAG, "✅ storeContract OK after ensure: contractId=${contract.contractId}")
+        return true
+    }
+
+    val e2 = second.exceptionOrNull()
+    val msg2 = e2?.message.orEmpty()
+
+    if (msg2.contains("already exists", ignoreCase = true)) {
+        Log.w(TAG, "🟡 storeContract already exists after ensure -> treated as OK: contractId=${contract.contractId}")
+        return true
+    }
+
+    Log.e(TAG, "🔴 storeContract retry failed: ${e2?.message}", e2)
+    return false
+}
 
     /**
      * ✅ Swift版の payable=true 相当（= 受領/claim）を Android で確実に再現するためのワークアラウンド。
@@ -463,7 +464,13 @@ object ShareProcessor {
             Log.d(TAG, "✅ Refund success: txid=$txid, amount=$chosenTotal")
 
             walletManager.sync()
-            db.refundTaskDao().deleteByShareId(uuid)
+
+            // ✅ 返金処理は「送金が確定するまで時間がかかる」ため、
+            // 受信側UIでも履歴として残せるように削除せずステータス遷移にする。
+            // （必要なら後で定期クリーンアップで消す）
+            runCatching {
+                db.refundTaskDao().markStatusByShareId(uuid, "COMPLETED")
+            }
 
             return@withContext RefundResult.Success(txid, chosenTotal)
 
@@ -636,7 +643,8 @@ object ShareProcessor {
         refundAddress: String,
         transactions: List<Pair<String, String>>,
         amount: ULong,
-        senderPublicKey: String
+        senderPublicKey: String,
+        paymentThreshold: ULong
     ) {
         val db = AppDatabase.getDatabase(context)
 
@@ -645,6 +653,7 @@ object ShareProcessor {
             put("contractId", contractId)
             put("refundAddress", refundAddress)
             put("amount", amount.toLong())
+            put("threshold", paymentThreshold.toLong())
             put("senderPublicKey", senderPublicKey)
             put("transactions", JSONArray().apply {
                 transactions.forEach { (txid, tx) ->
@@ -660,7 +669,10 @@ object ShareProcessor {
             shareID = shareID,
             senderPublicKey = senderPublicKey,
             contextJSON = contextJson.toString(),
-            createdAt = nowIsoString()
+            createdAt = nowIsoString(),
+            status = "PENDING",
+            detectedAmount = amount.toLong(),
+            paymentThreshold = paymentThreshold.toLong()
         )
 
         db.refundTaskDao().insert(entity)
