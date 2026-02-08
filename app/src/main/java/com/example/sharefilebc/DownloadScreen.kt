@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.BlockedSenderEntity
+import org.json.JSONArray
 import org.json.JSONObject
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
@@ -429,6 +430,19 @@ fun DownloadScreen(
                                 val contextJson = runCatching { JSONObject(task.contextJSON ?: "{}") }.getOrNull()
                                 val contractId = contextJson?.optString("contractId")?.takeIf { it.isNotBlank() }
                                 val refundAddress = contextJson?.optString("refundAddress")?.takeIf { it.isNotBlank() }
+                                val transactions: List<Pair<String, String>> = run {
+                                    val txArray = contextJson?.optJSONArray("transactions") ?: JSONArray()
+                                    buildList {
+                                        for (i in 0 until txArray.length()) {
+                                            val txObj = txArray.optJSONObject(i) ?: continue
+                                            val txid = txObj.optString("txid")
+                                            val tx = txObj.optString("transaction")
+                                            if (txid.isNotBlank() && tx.isNotBlank()) {
+                                                add(txid to tx)
+                                            }
+                                        }
+                                    }
+                                }
 
                                 if (contractId.isNullOrBlank()) {
                                     Toast.makeText(context, "contractId が不足しています", Toast.LENGTH_LONG).show()
@@ -445,8 +459,9 @@ fun DownloadScreen(
                                     ShareProcessor.refundShare(
                                         context = context,
                                         uuid = shareId,
-                                        contractId = contractId,
-                                        refundAddress = refundAddress
+                                        refundAddress = refundAddress,
+                                        contractStr = contractId,
+                                        transactions = transactions
                                     )
                                 } else {
                                     if (senderPubKey.isNullOrBlank()) {

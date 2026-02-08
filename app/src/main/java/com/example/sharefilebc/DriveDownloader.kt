@@ -15,6 +15,7 @@ import com.example.sharefilebc.data.DriveFileInfo
 import com.example.sharefilebc.data.FolderStructure
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
+import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
@@ -178,6 +179,19 @@ class DriveDownloader(private val context: Context) {
                     files = files
                 )
             } catch (e: Exception) {
+
+                // ✅ 404(File not found) は Room に残った folderId が無効化している可能性が高いので掃除する
+                if (e is GoogleJsonResponseException && e.statusCode == 404) {
+                    Log.w("DriveDownloader", "⚠️ Folder not found (404). Removing from Room. folderId=$folderId")
+                    runCatching {
+                        val db = AppDatabase.getDatabase(context.applicationContext)
+                        db.receivedFolderDao().deleteByFolderId(folderId)
+                    }.onFailure { t ->
+                        Log.w("DriveDownloader", "⚠️ Failed to delete invalid folderId from Room: $folderId", t)
+                    }
+                    return@withContext null
+                }
+
                 Log.e("DriveDownloader", "Error getting folder structure", e)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
@@ -228,7 +242,6 @@ class DriveDownloader(private val context: Context) {
                 )
 
                 // ✅ 復号に失敗して .vpfs のままなら Downloads へ保存しない
-                // （ユーザーにとっては意味のない暗号化ファイルが残るだけになる）
                 if (decryptedFile == tempFile && isVpfsLikeFileName(tempFile.name)) {
                     if (tempFile.exists()) tempFile.delete()
                     withContext(Dispatchers.Main) {

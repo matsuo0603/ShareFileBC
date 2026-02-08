@@ -70,40 +70,10 @@ class HomeActivity : ComponentActivity() {
         // DeepLink解析（入口統一）
         handleDeepLink(intent, "onCreate")
 
+        // ✅ 公開鍵リンク（登録）: onCreate / onNewIntent 両対応
+        handlePublicKeyLink(intent, "onCreate")
+
         val deepLinkUri: Uri? = intent?.data
-        val pubKeyLink = PublicKeyLinkBuilder.parse(deepLinkUri)
-
-        // 公開鍵リンク（登録）
-        if (pubKeyLink != null) {
-            lifecycleScope.launch {
-                val db = AppDatabase.getDatabase(applicationContext)
-                withContext(Dispatchers.IO) {
-                    db.emailKeyDao().upsert(
-                        EmailKeyEntity(
-                            email = pubKeyLink.email,
-                            derivedPublicKey = pubKeyLink.derivedPublicKey,
-                            trustLayerPublicKey = pubKeyLink.trustLayerPublicKey,
-                            folderIDFromPartner = pubKeyLink.folderId,
-                            isRefundRejected = false
-                        )
-                    )
-                }
-                Toast.makeText(this@HomeActivity, "公開鍵を登録しました", Toast.LENGTH_LONG).show()
-
-                lifecycleScope.launch(Dispatchers.IO) {
-                    runCatching {
-                        val keys = db.emailKeyDao().getAll().first()
-                        keys.forEach { key ->
-                            Log.d("DEBUG", "Email: ${key.email}")
-                            Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
-                            Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
-                        }
-                    }.onFailure { e ->
-                        Log.e("DEBUG", "EmailKeyEntity dump failed", e)
-                    }
-                }
-            }
-        }
 
         // Googleアカウント + Driveスコープ
         val account: GoogleSignInAccount? = GoogleSignIn.getLastSignedInAccount(this)
@@ -185,10 +155,6 @@ class HomeActivity : ComponentActivity() {
                 val composeScope = rememberCoroutineScope()
 
                 // ✅ 返金管理「閾値: 0」対策（既存DB互換）
-                // 過去に paymentThreshold を保存していない RefundTask が残っている場合、
-                // UIが contextJSON の optLong("threshold") に落ちて 0 と表示されることがある。
-                // DownloadScreen は task.paymentThreshold を優先表示するため、ここで埋めれば
-                // 画面側を大改修しなくても 0 表示は消える。
                 LaunchedEffect(Unit) {
                     composeScope.launch(Dispatchers.IO) {
                         runCatching {
@@ -260,13 +226,73 @@ class HomeActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+
+        // DeepLink解析（folder/file/share/refund系）
         handleDeepLink(intent, "onNewIntent")
+
+        // ✅ 公開鍵リンク（登録）: singleTask の onNewIntent 経由でも必ず走らせる
+        handlePublicKeyLink(intent, "onNewIntent")
     }
 
     @Deprecated("Activity Result API への移行推奨だが互換のため残置")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
+    }
+
+    /**
+     * ✅ 公開鍵URL (/pubkey/...) を受け取ったら DB に保存する。
+     * onCreate / onNewIntent の両方から呼ぶこと。
+     */
+    private fun handlePublicKeyLink(intent: Intent?, where: String) {
+        val uri = intent?.data
+        val pubKeyLink = PublicKeyLinkBuilder.parse(uri)
+
+        if (uri != null) {
+            Log.d(DL_TAG, "[$where][pubkey] uri=$uri")
+        }
+
+        if (pubKeyLink == null) {
+            Log.d(DL_TAG, "[$where][pubkey] not a pubkey link (skip)")
+            return
+        }
+
+        Log.d(
+            DL_TAG,
+            "[$where][pubkey] parsed email=${pubKeyLink.email} " +
+                    "derived=${pubKeyLink.derivedPublicKey.take(16)}... " +
+                    "trust=${pubKeyLink.trustLayerPublicKey.take(16)}... " +
+                    "folderId=${pubKeyLink.folderId}"
+        )
+
+        lifecycleScope.launch {
+            val db = AppDatabase.getDatabase(applicationContext)
+            withContext(Dispatchers.IO) {
+                db.emailKeyDao().upsert(
+                    EmailKeyEntity(
+                        email = pubKeyLink.email,
+                        derivedPublicKey = pubKeyLink.derivedPublicKey,
+                        trustLayerPublicKey = pubKeyLink.trustLayerPublicKey,
+                        folderIDFromPartner = pubKeyLink.folderId,
+                        isRefundRejected = false
+                    )
+                )
+            }
+            Toast.makeText(this@HomeActivity, "公開鍵を登録しました", Toast.LENGTH_LONG).show()
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching {
+                    val keys = db.emailKeyDao().getAll().first()
+                    keys.forEach { key ->
+                        Log.d("DEBUG", "Email: ${key.email}")
+                        Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
+                        Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
+                    }
+                }.onFailure { e ->
+                    Log.e("DEBUG", "EmailKeyEntity dump failed", e)
+                }
+            }
+        }
     }
 
     private fun handleDeepLink(intent: Intent?, where: String) {
@@ -348,9 +374,10 @@ class HomeActivity : ComponentActivity() {
         val folderIdFromQuery = uri.getQueryParameter("folderId")
 
         // /file/<ID> or /share/<ID>
-        val fileIdFromPath = if (pathSegments.size >= 2 && (pathSegments[0] == "file" || pathSegments[0] == "share")) {
-            pathSegments[1]
-        } else null
+        val fileIdFromPath =
+            if (pathSegments.size >= 2 && (pathSegments[0] == "file" || pathSegments[0] == "share")) {
+                pathSegments[1]
+            } else null
         val fileIdFromQuery = uri.getQueryParameter("fileId")
 
         // sender/to の別名も吸収（送信側の揺れ対策）
