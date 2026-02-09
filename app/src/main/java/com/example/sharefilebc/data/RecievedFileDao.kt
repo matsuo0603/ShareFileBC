@@ -47,4 +47,11 @@ interface ReceivedFileDao {
      */
     @Query("SELECT * FROM received_files WHERE shareID = :shareId LIMIT 1")
     suspend fun findByShareId(shareId: String): ReceivedFileEntity?
+
+    /**
+     * deep link / Drive 同期の補助用
+     * fileID で検索して該当レコードを取得
+     */
+    @Query("SELECT * FROM received_files WHERE fileID = :fileId LIMIT 1")
+    suspend fun findByFileId(fileId: String): ReceivedFileEntity?
 }

@@ -110,6 +110,48 @@ class DriveDownloader(private val context: Context) {
             try {
                 val driveService = getDriveService() ?: return@withContext null
 
+                // ✅ 擬似フォルダID（file:<fileId>）対応：
+                // IncomingFilesSyncer が file:<fileId> を received_folders に入れることで、
+                // UI(DownloadScreen) を変えずに「単体ファイル共有」を一覧に表示できる。
+                if (folderId.startsWith("file:")) {
+                    val fileId = folderId.removePrefix("file:").trim()
+                    if (fileId.isBlank()) return@withContext null
+
+                    val file = driveService.files().get(fileId)
+                        .setFields("id, name, mimeType, createdTime, owners(displayName, emailAddress)")
+                        .execute()
+
+                    val jst = TimeZone.getTimeZone("Asia/Tokyo")
+                    val fullFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply {
+                        timeZone = jst
+                    }
+
+                    val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
+                    val uploadDate = Date(uploadMillis)
+                    val uploadStr = fullFormatter.format(uploadDate)
+                    val deleteStr = fullFormatter.format(Date(uploadMillis + expirationMillis))
+
+                    val owner = file.owners?.firstOrNull()
+                    val ownerDisplayName = owner?.displayName?.takeIf(String::isNotBlank)
+                    val ownerEmail = owner?.emailAddress?.takeIf(String::isNotBlank)
+                    val senderName = ownerDisplayName ?: ownerEmail ?: "Unknown Sender"
+
+                    return@withContext FolderStructure(
+                        folderName = "(shared file)",
+                        files = listOf(
+                            DriveFileInfo(
+                                id = file.id,
+                                name = file.name,
+                                mimeType = file.mimeType,
+                                isFolder = false,
+                                senderName = senderName,
+                                uploadDateTime = uploadStr,
+                                deleteDateTime = deleteStr
+                            )
+                        )
+                    )
+                }
+
                 val folderInfo = driveService.files().get(folderId)
                     .setFields("id, name, parents, owners(displayName, emailAddress)")
                     .execute()
@@ -219,6 +261,13 @@ class DriveDownloader(private val context: Context) {
                 // 送信者（ownerEmail）を取っておく（復号時の署名検証に必要）
                 val fileCtx = resolveFileContext(fileId)
 
+                // ✅ /file/<fileId> deep link では ownerEmail が取れないことがあるため、
+                // Room(received_files) に保存済みの senderPublicKey（署名検証用 /0）も拾う
+                val receivedSenderPubKey: String? = runCatching {
+                    val db = AppDatabase.getDatabase(context.applicationContext)
+                    db.receivedFileDao().findByFileId(fileId)?.senderPublicKey
+                }.getOrNull()
+
                 val fileMetadata = driveService.files().get(fileId).execute()
                 val originalName = fileMetadata.name ?: "downloaded.vpfs"
 
@@ -238,7 +287,8 @@ class DriveDownloader(private val context: Context) {
                 // 復号処理（tempDir内で完結）
                 val decryptedFile = tryDecryptPackageIfNeeded(
                     downloadedFile = tempFile,
-                    senderEmail = fileCtx?.ownerEmail
+                    senderEmail = fileCtx?.ownerEmail,
+                    senderPublicKeyHex = receivedSenderPubKey
                 )
 
                 // ✅ 復号に失敗して .vpfs のままなら Downloads へ保存しない
@@ -290,10 +340,19 @@ class DriveDownloader(private val context: Context) {
      * 署名は /0 で行われているため、trustLayerPublicKey（/0）を使用する。
      *
      * 優先順位：
-     *  1) EmailKeyEntity.trustLayerPublicKey（署名用：/0）
-     *  2) UserEntity.publicKeyHex（フォールバック）
+     *  1) deep link / Room(received_files).senderPublicKey（署名用：/0）
+     *  2) EmailKeyEntity.trustLayerPublicKey（署名用：/0）
+     *  3) UserEntity.publicKeyHex（フォールバック）
      */
-    private suspend fun resolveSignerPublicKeyHex(senderEmail: String?): String? {
+    private suspend fun resolveSignerPublicKeyHex(senderEmail: String?, senderPublicKeyHex: String?): String? {
+        // ✅ deep link(/file/<id>) では senderEmail が null になりがち。
+        // その場合でも URL の sender=（/0 公開鍵）や Room(received_files) の senderPublicKey を優先して使う。
+        val direct = senderPublicKeyHex?.trim()?.takeIf { it.isNotBlank() }
+        if (direct != null) {
+            Log.d("DriveDownloader", "🔑 送信者署名用公開鍵（direct /0）: ${direct.take(16)}...")
+            return direct
+        }
+
         if (senderEmail.isNullOrBlank()) return null
 
         return try {
@@ -320,7 +379,8 @@ class DriveDownloader(private val context: Context) {
 
     private suspend fun tryDecryptPackageIfNeeded(
         downloadedFile: java.io.File,
-        senderEmail: String?
+        senderEmail: String?,
+        senderPublicKeyHex: String?
     ): java.io.File {
         // ✅ .tmp も許容（temp保存してるため）
         val name = downloadedFile.name
@@ -333,7 +393,7 @@ class DriveDownloader(private val context: Context) {
             Log.d("DriveDownloader", "📄 ファイル名: ${downloadedFile.name}")
             Log.d("DriveDownloader", "📧 送信者メール: $senderEmail")
 
-            val signerPublicKeyHex = resolveSignerPublicKeyHex(senderEmail)
+            val signerPublicKeyHex = resolveSignerPublicKeyHex(senderEmail, senderPublicKeyHex)
 
             if (signerPublicKeyHex.isNullOrBlank()) {
                 Log.e("DriveDownloader", "❌ 復号に必要な送信者公開鍵が見つかりません")
@@ -399,8 +459,6 @@ class DriveDownloader(private val context: Context) {
             }
             downloadedFile
         } catch (e: Exception) {
-            // ✅ GCM の mac check failed は「鍵が違う / nonce+tag+cipher が違う」の典型
-            // まずは「送信側が暗号化に使った受信者公開鍵」と「受信側の /1」が一致しているかを疑う
             Log.e("DriveDownloader", "❌ 予期しないエラー", e)
             withContext(Dispatchers.Main) {
                 val msg = when (e) {
@@ -417,10 +475,6 @@ class DriveDownloader(private val context: Context) {
         }
     }
 
-    /**
-     * ファイルをDownloadsフォルダへコピー（MediaStore経由）
-     * Android 10以降でも動作する方法
-     */
     private suspend fun copyToDownloads(sourceFile: java.io.File): java.io.File {
         return withContext(Dispatchers.IO) {
             try {
@@ -445,10 +499,8 @@ class DriveDownloader(private val context: Context) {
 
                     Log.d("DriveDownloader", "✅ MediaStore経由でコピー完了: ${sourceFile.name} uri=$uri")
 
-                    // 返り値は表示用に “Downloadsにあるはずのファイル名” を持つ File を返す
                     File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), sourceFile.name)
                 } else {
-                    // Android 9以前: 直接コピー（WRITE_EXTERNAL_STORAGE が必要になる可能性あり）
                     val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                     val destFile = java.io.File(downloadsDir, sourceFile.name)
 
@@ -470,15 +522,11 @@ class DriveDownloader(private val context: Context) {
                 }
             } catch (e: Exception) {
                 Log.e("DriveDownloader", "❌ Downloadsフォルダへのコピー失敗", e)
-                // エラー時は元のファイルを返す
                 sourceFile
             }
         }
     }
 
-    /**
-     * ファイル名からMIMEタイプを推測
-     */
     private fun getMimeType(fileName: String): String {
         return when {
             fileName.endsWith(".jpg", ignoreCase = true) ||

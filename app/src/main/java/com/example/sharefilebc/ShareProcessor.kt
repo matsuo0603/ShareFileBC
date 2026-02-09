@@ -45,11 +45,26 @@ object ShareProcessor {
         val db = AppDatabase.getDatabase(context)
 
         // ✅ DBガード（二重処理防止）
-        val alreadyProcessed =
-            (db.receivedFileDao().findByShareId(uuid) != null) ||
-                    (db.refundTaskDao().findByShareId(uuid) != null)
+        //
+        // 注意：HomeActivity / IncomingFilesSyncer は deep link や Drive 同期のタイミングで
+        // received_files に "プレースホルダ行" を先に作ることがある。
+        // そのため「行が存在するだけ」で processed 扱いにすると、
+        // 本来走るべき processReceivedShare が永遠にスキップされ、
+        // ・トークン反映が走らない
+        // ・DownloadScreen（received_folders）に何も出ない
+        // という状態になる。
+        //
+        // ✅ processed とみなす条件：
+        // - refund_tasks が存在する（返金フローに入った/入るべき状態）
+        // - received_files のフラグが更新済み（everAllowed / blocked / nameMetadataError）
+        val received = db.receivedFileDao().findByShareId(uuid)
+        val hasRefundTask = db.refundTaskDao().findByShareId(uuid) != null
+        val hasProcessedFlags =
+            received?.isDownloadEverAllowed == true ||
+                    received?.isDownloadBlocked == true ||
+                    !received?.nameMetadataError.isNullOrBlank()
 
-        if (alreadyProcessed) {
+        if (hasRefundTask || hasProcessedFlags) {
             Log.d(DL_TAG, "[ShareProcessor] DB guard hit. already processed uuid=$uuid")
             return@withContext ShareProcessResult.Success(0UL)
         }

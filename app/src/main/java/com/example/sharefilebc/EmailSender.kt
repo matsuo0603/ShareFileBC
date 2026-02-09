@@ -91,7 +91,9 @@ object EmailSender {
         threshold: ULong? = null,
         senderAddress: String? = null,
         uuid: String? = null,
-        txid: String? = null
+        txid: String? = null,
+        /** Swift版互換: URLクエリに付ける nameMeta(Base64(JSON)) */
+        nameMetaBase64: String? = null
     ) {
         val subject = "ファイル共有: $fileName"
 
@@ -101,13 +103,13 @@ object EmailSender {
         // ✅ 新仕様のときだけ、Driveのdescriptionに shareメタを保存（自動受信用）
         // 失敗してもメール送信は続行する（絶対に壊さない）
         if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+            // Swift版に合わせて、受信側で必要な最小限のメタだけ保存する
             val descQuery = buildString {
                 append("uuid=").append(Uri.encode(uuid))
+                append("&refund=").append(Uri.encode(senderAddress ?: ""))
                 append("&txid=").append(Uri.encode(txid))
                 append("&sender=").append(Uri.encode(senderPublicKeyHex))
-                append("&to=").append(Uri.encode(recipientEmail))
-                threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
-                senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
+                nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
             }
 
             ioScope.launch {
@@ -121,11 +123,10 @@ object EmailSender {
                 val shareUrlHttps = buildString {
                     append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}?")
                     append("uuid=").append(Uri.encode(uuid))
+                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                     append("&txid=").append(Uri.encode(txid))
                     append("&sender=").append(Uri.encode(senderPublicKeyHex))
-                    append("&to=").append(Uri.encode(recipientEmail))
-                    threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
-                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
+                    nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
                 }
 
                 // ✅ 新仕様：カスタムスキーム（App Linksが効かない端末/状況のための保険）
@@ -133,11 +134,10 @@ object EmailSender {
                     append("sharefilebc://download?")
                     append("fileId=").append(Uri.encode(fileId))
                     append("&uuid=").append(Uri.encode(uuid))
+                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                     append("&txid=").append(Uri.encode(txid))
                     append("&sender=").append(Uri.encode(senderPublicKeyHex))
-                    append("&to=").append(Uri.encode(recipientEmail))
-                    threshold?.let { append("&threshold=").append(Uri.encode(it.toString())) }
-                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
+                    nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
                 }
 
                 appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")

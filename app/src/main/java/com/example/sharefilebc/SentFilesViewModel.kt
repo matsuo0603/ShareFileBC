@@ -1,104 +1,116 @@
 package com.example.sharefilebc
 
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.sharefilebc.data.SharedFolderDao
-import com.example.sharefilebc.data.UserDao
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
+import com.example.sharefilebc.data.AppDatabase
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
-import java.util.TimeZone
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
-data class SentFileItemUi(
-    val id: Int,
-    val fileName: String,
-    val uploadedAt: String,
-    val deleteAt: String
-)
+/**
+ * SharedScreen の deep link 受信処理を "画面の Composition スコープ" から切り離すための ViewModel。
+ *
+ * これにより、画面の再Compose / タブ切替 / 画面遷移で LaunchedEffect がキャンセルされても
+ * processReceivedShare が途中で中断されにくくなる（LeftCompositionCancellationException 対策）。
+ */
+class SharedScreenViewModel(application: Application) : AndroidViewModel(application) {
 
-data class SentFileGroupUi(
-    val recipientName: String,
-    val recipientEmail: String?,
-    val files: List<SentFileItemUi>
-)
+    private val dlTag = "DL_DEBUG"
 
-class SentFilesViewModel(
-    private val sharedFolderDao: SharedFolderDao,
-    private val userDao: UserDao
-) : ViewModel() {
+    /**
+     * UUID|txids の処理キー。
+     * - メモリ上の二重処理防止
+     * - WorkManager/DB ガードと併用
+     */
+    private val processedKeys = ConcurrentHashMap<String, Boolean>()
 
-    private val _sentFileGroups = MutableStateFlow<List<SentFileGroupUi>>(emptyList())
-    val sentFileGroups: StateFlow<List<SentFileGroupUi>> = _sentFileGroups.asStateFlow()
+    fun triggerProcessReceivedShareIfNeeded(
+        processKey: String,
+        selectedTabLabel: String,
+        uuid: String?,
+        txids: List<String>,
+        senderPublicKey: String?,
+        refundAddress: String?,
+        threshold: ULong,
+        colorId: String
+    ) {
+        if (processKey.isBlank()) {
+            Log.d(dlTag, "[SharedScreenVM] skip: empty processKey")
+            return
+        }
+        if (selectedTabLabel != "受信") {
+            Log.d(dlTag, "[SharedScreenVM] skip: selectedTab=$selectedTabLabel processKey=$processKey")
+            return
+        }
+        if (uuid.isNullOrBlank() || txids.isEmpty() || senderPublicKey.isNullOrBlank()) {
+            Log.d(
+                dlTag,
+                "[SharedScreenVM] missing params uuid=$uuid txids=${txids.size} senderKeyEmpty=${senderPublicKey.isNullOrBlank()} threshold=$threshold"
+            )
+            return
+        }
 
-    private val dateFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.JAPAN).apply {
-        timeZone = TimeZone.getTimeZone("Asia/Tokyo")
-    }
+        // ① メモリガード
+        if (processedKeys[processKey] == true) {
+            Log.d(dlTag, "[SharedScreenVM] skip by memory guard key=$processKey")
+            return
+        }
 
-    init {
-        viewModelScope.launch {
-            combine(sharedFolderDao.getAll(), userDao.getAll()) { sentFiles, users ->
-                val emailMap = users.associate { it.name to it.email }
-                sentFiles
-                    .groupBy { it.recipientName }
-                    .map { (recipientName, files) ->
-                        val sortedFiles = files.sortedByDescending { parseDate(it.date)?.time ?: 0L }
-                        SentFileGroupUi(
-                            recipientName = recipientName,
-                            recipientEmail = emailMap[recipientName],
-                            files = sortedFiles.map { file ->
-                                val uploadedAt = file.date
-                                SentFileItemUi(
-                                    id = file.id,
-                                    fileName = file.fileName,
-                                    uploadedAt = uploadedAt,
-                                    deleteAt = calculateDeleteAt(uploadedAt, file.deleteDateTime)
-                                )
-                            }
-                        )
-                    }
-                    .sortedByDescending { group ->
-                        group.files.maxOfOrNull { parseDate(it.uploadedAt)?.time ?: 0L } ?: 0L
-                    }
-            }.collect { grouped ->
-                _sentFileGroups.value = grouped
+        // 受信処理は ViewModel の viewModelScope で実行（画面の composition scope から独立）
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // ② DBガード（二重処理防止）
+                //
+                // 注意：HomeActivity では deep link を受けると先に received_files を「プレースホルダ」として upsert する。
+                // そのため「received_files に行があるだけ」で processed 扱いにすると、
+                // processReceivedShare が永遠に走らず、DownloadScreen 側に何も表示されない状態になる。
+                //
+                // ✅ processed の判定は以下のみ：
+                // - refund_tasks が存在する（= 返金ルートに入った/入るべき状態）
+                // - received_files のフラグが更新済み（everAllowed / blocked / nameMetadataError）
+                val alreadyProcessedInDb = withContext(Dispatchers.IO) {
+                    val db = AppDatabase.getDatabase(getApplication())
+                    val received = db.receivedFileDao().findByShareId(uuid)
+                    val hasRefundTask = db.refundTaskDao().findByShareId(uuid) != null
+                    val hasProcessedFlags =
+                        received?.isDownloadEverAllowed == true ||
+                                received?.isDownloadBlocked == true ||
+                                !received?.nameMetadataError.isNullOrBlank()
+
+                    hasRefundTask || hasProcessedFlags
+                }
+                if (alreadyProcessedInDb) {
+                    processedKeys[processKey] = true
+                    Log.d(dlTag, "[SharedScreenVM] skip by DB guard key=$processKey")
+                    return@launch
+                }
+
+                Log.d(dlTag, "[SharedScreenVM] processReceivedShare start key=$processKey")
+
+                val result = ShareProcessor.processReceivedShare(
+                    context = getApplication(),
+                    uuid = uuid,
+                    txids = txids,
+                    senderPublicKey = senderPublicKey,
+                    refundAddress = refundAddress,
+                    threshold = threshold,
+                    colorId = colorId
+                )
+
+                processedKeys[processKey] = true
+                Log.d(dlTag, "[SharedScreenVM] processReceivedShare end key=$processKey result=$result")
+
+            } catch (ce: CancellationException) {
+                // キャンセルはエラー扱いにしない（OS が落とした／スコープが閉じた等）
+                Log.d(dlTag, "[SharedScreenVM] processReceivedShare cancelled key=$processKey")
+                throw ce
+            } catch (t: Throwable) {
+                Log.e(dlTag, "[SharedScreenVM] processReceivedShare failed key=$processKey", t)
             }
         }
-    }
-
-    private fun parseDate(raw: String): java.util.Date? = try {
-        dateFormatter.parse(raw)
-    } catch (_: Exception) {
-        null
-    }
-
-    private fun calculateDeleteAt(uploadedAt: String, storedDelete: String): String {
-        if (storedDelete.isNotBlank()) {
-            return storedDelete
-        }
-        val uploadedDate = parseDate(uploadedAt) ?: return ""
-        val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo")).apply {
-            time = uploadedDate
-            add(Calendar.DAY_OF_YEAR, 7)
-        }
-        return dateFormatter.format(calendar.time)
-    }
-}
-
-class SentFilesViewModelFactory(
-    private val sharedFolderDao: SharedFolderDao,
-    private val userDao: UserDao
-) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(SentFilesViewModel::class.java)) {
-            @Suppress("UNCHECKED_CAST")
-            return SentFilesViewModel(sharedFolderDao, userDao) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

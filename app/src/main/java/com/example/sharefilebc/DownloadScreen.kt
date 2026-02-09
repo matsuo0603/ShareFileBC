@@ -208,8 +208,15 @@ fun DownloadScreen(
             "DeepLink(display-only): folder=$initialFolderId file=$initialFileId uuid=$deepLinkUuid txid=${deepLinkTxid?.take(8)}... senderPub=${deepLinkSenderPublicKey?.take(8)}..."
         )
 
-        // folderId が Room に存在するなら、その sender を開く
-        val matched = initialFolderId?.let { fid ->
+        // ✅ /file/<fileId> の deep link は folderId が無いので、
+        //    HomeActivity 側で作る擬似 folderId = "file:<fileId>" を探す
+        val targetFolderId = initialFolderId
+            ?.takeIf { it.isNotBlank() }
+            ?: initialFileId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "file:$it" }
+        // folderId（または擬似 folderId）が Room に存在するなら、その sender を開く
+        val matched = targetFolderId?.let { fid ->
             receivedFolders.firstOrNull { it.folderId == fid }
         }
 
@@ -221,7 +228,7 @@ fun DownloadScreen(
             // まだ Shared 側の受信処理が DB 保存を終えてない可能性があるので
             // ここでは何もしない（＝勝手にDriveへ行かない）
             // ユーザーに「受信処理中」の状態が伝わるようにログだけ出す
-            Log.d("DownloadScreen", "DeepLink folderId not found in Room yet. Waiting for Shared processing.")
+            Log.d("DownloadScreen", "DeepLink folderId not found in Room yet. Waiting for Shared processing. target=$targetFolderId")
         }
     }
 

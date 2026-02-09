@@ -26,7 +26,13 @@ import java.util.Locale
 import java.util.TimeZone
 
 sealed class UploadResult {
-    data class Success(val fileName: String, val fileId: String, val folderId: String) : UploadResult()
+    data class Success(
+        val fileName: String,
+        val fileId: String,
+        val folderId: String,
+        /** Swift版互換: URLクエリに載せる nameMeta (Base64(JSON)) */
+        val nameMetaBase64: String
+    ) : UploadResult()
     data class MissingRecipientPublicKey(val registrationLink: String?) : UploadResult()
     data class Failure(val error: Throwable? = null) : UploadResult()
 }
@@ -122,13 +128,18 @@ class DriveUploader(private val context: Context) {
                 val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
                 val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
 
-                val secureBytes = SecurePackage.create(
+                // Swift版互換: nameMeta(Base64(JSON)) も同時に生成してメールURLに付与する
+                val secure = SecurePackage.createWithNameMeta(
                     data = fileBytes,
                     fileName = fileName,
                     recipientPublicKeyHex = recipientPublicKeyHex,
                     signingPrivateKeyHex = signingPrivateKeyHex,
                     signerPublicKeyHex = signerPublicKeyHex
                 )
+
+                // ✅ デバッグ: iOS との互換確認用（nameMeta は URL-safe Base64 のはず）
+                Log.d("DriveUploader", "🔐 nameMeta(base64url) len=${secure.nameMetaBase64.length} head=${secure.nameMetaBase64.take(24)}")
+
                 val uploadName = "$fileName.vpfs"
 
                 val fileMetadata = File().apply {
@@ -136,13 +147,17 @@ class DriveUploader(private val context: Context) {
                     parents = listOf(dateFolderId)
                 }
 
-                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", secureBytes)
+                val fileContent = com.google.api.client.http.ByteArrayContent("application/octet-stream", secure.packageBytes)
                 val uploadedFile = driveService.files().create(fileMetadata, fileContent)
                     .setFields("id, name, webViewLink")
                     .execute()
 
-                grantReaderPermission(driveService, dateFolderId, recipient.email)
-                grantReaderPermission(driveService, uploadedFile.id, recipient.email)
+                // ✅ Swift版仕様: ShareFileBCApp 以外は「リンクを知っている人が閲覧可」にする
+                // iOS側は sharedWithMe ではなく URL(fileId) から辿る設計なので、
+                // Android 送信でも anyone 権限を付与して iOS/Android 双方で取得できるようにする。
+                setPublicAccess(driveService, recipientFolderId)
+                setPublicAccess(driveService, dateFolderId)
+                setPublicAccess(driveService, uploadedFile.id)
 
                 db.sharedFolderDao().insert(
                     SharedFolderEntity(
@@ -154,7 +169,7 @@ class DriveUploader(private val context: Context) {
                     )
                 )
 
-                UploadResult.Success(fileName, uploadedFile.id, dateFolderId)
+                UploadResult.Success(fileName, uploadedFile.id, dateFolderId, secure.nameMetaBase64)
             } catch (e: Exception) {
                 Log.e("DriveUploader", "Upload error", e)
                 UploadResult.Failure(e)
@@ -162,29 +177,20 @@ class DriveUploader(private val context: Context) {
         }
     }
 
-    private fun grantReaderPermission(
-        driveService: Drive,
-        targetId: String,
-        recipientEmail: String
-    ) {
+    private fun setPublicAccess(driveService: Drive, targetId: String) {
         try {
             val permission = Permission().apply {
-                type = "user"
+                type = "anyone"
                 role = "reader"
-                emailAddress = recipientEmail
             }
             driveService.permissions().create(targetId, permission)
                 .setSendNotificationEmail(false)
                 .execute()
-            Log.d("DriveUploader", "✅ granted reader permission: target=$targetId to=$recipientEmail")
+            Log.d("DriveUploader", "✅ granted public access(anyone:reader): target=$targetId")
         } catch (e: Exception) {
-            Log.e("DriveUploader", "❌ failed to grant permission: target=$targetId to=$recipientEmail", e)
+            Log.e("DriveUploader", "❌ failed to grant public access: target=$targetId", e)
         }
     }
-
-    // 以前はここで KeyDerivation の公開鍵を my_public_keys に書き込んでいたが、
-    // それだと Tapyrus HdWallet の鍵と世代がズレて受信側の storeContract が失敗する。
-    // 現在は WalletManager.initializeIfNeeded() 内の ensureMyPublicKeyExists() に一元化している。
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String): String {
         val existing = drive.files().list()

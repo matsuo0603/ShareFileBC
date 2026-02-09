@@ -1,7 +1,6 @@
 // SharedScreen.kt
 package com.example.sharefilebc
 
-import android.util.Log
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -18,11 +17,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.sharefilebc.data.AppDatabase
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 import com.example.sharefilebc.ui.theme.SharedScreenDimens
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 private enum class SharedInnerTab(val label: String) {
     Sent("送信"),
@@ -68,71 +65,26 @@ fun SharedScreen(
         if (uuid.isBlank() || txidList.isEmpty()) "" else "$uuid|${txidList.sorted().joinToString(",")}"
     }
 
-    val processedMap = remember { mutableStateMapOf<String, Boolean>() }
+    // ✅ 受信処理は ViewModel の viewModelScope で実行して、Compose の LaunchedEffect キャンセル
+    // （LeftCompositionCancellationException）で途中中断されないようにする。
+    // ⚠ Redeclaration 回避のため SharedDeepLinkViewModel を使う
+    val sharedVm: SharedDeepLinkViewModel = viewModel()
 
-    LaunchedEffect(processKey, selectedTab) {
-        if (processKey.isBlank()) {
-            Log.d(DL_TAG, "[SharedScreen] skip: empty processKey")
-            return@LaunchedEffect
-        }
-        if (selectedTab != SharedInnerTab.Received) {
-            Log.d(DL_TAG, "[SharedScreen] skip: selectedTab=$selectedTab processKey=$processKey")
-            return@LaunchedEffect
-        }
-
-        val uuid = deepLinkUuid?.trim()
-        val senderKey = deepLinkSenderPublicKey?.trim()
-        // ✅ Swift版は paymentThreshold がデフォルト 1（UserDefaults）
-        // Android側も deep link 側に threshold が無い/0 の場合は WalletSettings の値を使う。
+    LaunchedEffect(processKey, selectedTab, deepLinkUuid, deepLinkTxid, deepLinkSenderPublicKey, deepLinkRefundAddress, deepLinkThreshold) {
         val threshold = deepLinkThreshold
             ?.takeIf { it > 0uL }
             ?: WalletSettingsManager.getInstance(context).getPaymentThreshold()
 
-        if (uuid.isNullOrBlank() || txidList.isEmpty() || senderKey.isNullOrBlank()) {
-            Log.d(
-                DL_TAG,
-                "[SharedScreen] missing params uuid=$uuid txids=${txidList.size} senderKeyEmpty=${senderKey.isNullOrBlank()} threshold=$threshold"
-            )
-            return@LaunchedEffect
-        }
-
-        // ① メモリガード
-        if (processedMap[processKey] == true) {
-            Log.d(DL_TAG, "[SharedScreen] skip by memory guard key=$processKey")
-            return@LaunchedEffect
-        }
-
-        // ② DBガード（received_files OR refund_tasks）
-        val alreadyProcessedInDb = withContext(Dispatchers.IO) {
-            val db = AppDatabase.getDatabase(context)
-            val hasReceived = db.receivedFileDao().findByShareId(uuid) != null
-            val hasRefundTask = db.refundTaskDao().findByShareId(uuid) != null
-            hasReceived || hasRefundTask
-        }
-        if (alreadyProcessedInDb) {
-            processedMap[processKey] = true
-            Log.d(DL_TAG, "[SharedScreen] skip by DB guard key=$processKey")
-            return@LaunchedEffect
-        }
-
-        Log.d(DL_TAG, "[SharedScreen] processReceivedShare start key=$processKey")
-
-        runCatching {
-            ShareProcessor.processReceivedShare(
-                context = context,
-                uuid = uuid,
-                txids = txidList,
-                senderPublicKey = senderKey,
-                refundAddress = deepLinkRefundAddress,
-                threshold = threshold,
-                colorId = Constants.Strings.tokenColorId
-            )
-        }.onSuccess { result ->
-            processedMap[processKey] = true
-            Log.d(DL_TAG, "[SharedScreen] processReceivedShare end key=$processKey result=$result")
-        }.onFailure { throwable ->
-            Log.e(DL_TAG, "[SharedScreen] processReceivedShare failed key=$processKey", throwable)
-        }
+        sharedVm.triggerProcessReceivedShareIfNeeded(
+            processKey = processKey,
+            selectedTabLabel = selectedTab.label,
+            uuid = deepLinkUuid,
+            txids = txidList,
+            senderPublicKey = deepLinkSenderPublicKey,
+            refundAddress = deepLinkRefundAddress,
+            threshold = threshold,
+            colorId = Constants.Strings.tokenColorId
+        )
     }
 
     Column(

@@ -37,8 +37,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharefilebc.data.AppDatabase
+import com.example.sharefilebc.data.SharedFolderEntity
+import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
 
 @Composable
@@ -47,10 +48,15 @@ fun SentFilesScreen(modifier: Modifier = Modifier) {
     val db = AppDatabase.getDatabase(context)
     val sharedDao = db.sharedFolderDao()
     val userDao = db.userDao()
-    val viewModel: SentFilesViewModel = viewModel(
-        factory = SentFilesViewModelFactory(sharedDao, userDao)
-    )
-    val sentGroups = viewModel.sentFileGroups.collectAsState(initial = emptyList()).value
+
+    // ✅ ViewModel無し：DAOのFlowを直接購読
+    val sharedFolders = sharedDao.getAll().collectAsState(initial = emptyList()).value
+    val users = userDao.getAll().collectAsState(initial = emptyList()).value
+
+    // ✅ 画面表示用にグルーピング（recipientName単位）
+    val sentGroups = remember(sharedFolders, users) {
+        buildSentGroups(sharedFolders, users)
+    }
 
     if (sentGroups.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -231,3 +237,53 @@ private fun SentFileItem(file: SentFileItemUi) {
         )
     }
 }
+
+/**
+ * ✅ 送信済み（SharedFolderEntity）を recipientName でまとめて UI表示用に変換
+ * 追加ファイルは作らない（このファイル内で完結）
+ */
+private fun buildSentGroups(
+    sharedFolders: List<SharedFolderEntity>,
+    users: List<UserEntity>
+): List<SentFileGroupUi> {
+    // name -> email
+    val nameToEmail: Map<String, String> = users.associate { it.name to it.email }
+
+    val grouped: Map<String, List<SharedFolderEntity>> = sharedFolders.groupBy { it.recipientName }
+
+    return grouped.entries.map { (recipientName, folders) ->
+        val items = folders
+            .sortedWith(
+                compareByDescending<SharedFolderEntity> { it.date }
+                    .thenByDescending { it.id }
+            )
+            .map { f ->
+                SentFileItemUi(
+                    id = f.id,
+                    fileName = f.fileName,
+                    uploadedAt = f.date,            // yyyy-MM-dd（DBがこの形式前提）
+                    deleteAt = f.deleteDateTime     // 空の可能性あり
+                )
+            }
+
+        SentFileGroupUi(
+            recipientName = recipientName,
+            recipientEmail = nameToEmail[recipientName],
+            files = items
+        )
+    }.sortedBy { it.recipientName }
+}
+
+/** この画面用の最小UIモデル（新規ファイルは作らない） */
+private data class SentFileGroupUi(
+    val recipientName: String,
+    val recipientEmail: String?,
+    val files: List<SentFileItemUi>
+)
+
+private data class SentFileItemUi(
+    val id: Int,
+    val fileName: String,
+    val uploadedAt: String, // yyyy-MM-dd
+    val deleteAt: String
+)

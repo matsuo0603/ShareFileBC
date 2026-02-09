@@ -29,15 +29,109 @@ import java.util.zip.ZipOutputStream
 object SecurePackage {
 
     /**
-     * 暗号化パッケージを作成
-     *
-     * @param data 送信ファイル本体
-     * @param fileName 送信ファイル名
-     * @param recipientPublicKeyHex 受信者の公開鍵（ECIES 用）
-     * @param signingPrivateKeyHex  送信者の秘密鍵（ECDSA 用）
-     * @param signerPublicKeyHex    署名検証用の公開鍵（省略時は signingPrivateKeyHex から導出）
-     * @return .vpfs パッケージのバイト列
+     * Swift版の uploadedNameMetadata と同等の nameMeta(JSON) を生成するための構造。
+     * URLクエリに乗せる都合上 Base64(JSON) で返す。
      */
+    data class CreateResult(
+        val packageBytes: ByteArray,
+        val nameMetaBase64: String
+    )
+
+    /**
+     * create() の拡張版。
+     * - .vpfs 本体に加えて、受信側が一覧表示に使う nameMeta（Swift: uploadedNameMetadata）を生成する。
+     *
+     * Swift の PickerDelegate.swift と同じキー名で JSON を作り、Base64(JSON) を返す。
+     */
+    fun createWithNameMeta(
+        data: ByteArray,
+        fileName: String,
+        recipientPublicKeyHex: String,
+        signingPrivateKeyHex: String,
+        signerPublicKeyHex: String? = null
+    ): CreateResult {
+        // 1. ファイル本体 & ファイル名を暗号化する AES 鍵を生成
+        val aesKey = AESGCMCrypto.generateKey()
+
+        val encBody = AESGCMCrypto.encrypt(data, aesKey)
+        val encName = AESGCMCrypto.encrypt(fileName.toByteArray(Charsets.UTF_8), aesKey)
+
+        // 2. AES鍵を ECIES で暗号化
+        val encKeyResult = ECIES.encryptAESKey(aesKey, recipientPublicKeyHex)
+
+        // 3. 署名用メッセージ（Swift と同じ順番）
+        val message = ByteArrayOutputStream().use { bout ->
+            bout.write(encKeyResult.ephemeralPublicKey)
+            bout.write(encKeyResult.encryptedAESKey)
+            bout.write(encKeyResult.nonce)
+            bout.write(encKeyResult.tag)
+            bout.write(encBody.nonce)
+            bout.write(encBody.ciphertext)
+            bout.write(encBody.tag)
+            bout.write(encName.nonce)
+            bout.write(encName.tag)
+            bout.write(encName.ciphertext)
+            bout.toByteArray()
+        }
+
+        val signature = ECDSA.sign(message, signingPrivateKeyHex)
+        val signerPubKeyToEmbed = signerPublicKeyHex
+            ?: derivePublicKeyHexFromPrivate(signingPrivateKeyHex)
+
+        // 4. ZIP(.vpfs)
+        val zipBytes = ByteArrayOutputStream()
+        ZipOutputStream(zipBytes).use { zos ->
+            fun putEntry(name: String, bytes: ByteArray) {
+                val entry = ZipEntry(name)
+                zos.putNextEntry(entry)
+                zos.write(bytes)
+                zos.closeEntry()
+            }
+
+            putEntry("keyEphemeral", encKeyResult.ephemeralPublicKey)
+            putEntry("keyCipher", encKeyResult.encryptedAESKey)
+            putEntry("keyNonce", encKeyResult.nonce)
+            putEntry("keyTag", encKeyResult.tag)
+            putEntry("bodyNonce", encBody.nonce)
+            putEntry("bodyCipher", encBody.ciphertext)
+            putEntry("bodyTag", encBody.tag)
+            putEntry("nameNonce", encName.nonce)
+            putEntry("nameTag", encName.tag)
+            putEntry("nameCipher", encName.ciphertext)
+            putEntry("signature", signature)
+            putEntry("signerPubKey", signerPubKeyToEmbed.toByteArray())
+        }
+
+        // 5. nameMeta(JSON)
+        // ✅ iOS SecurePackage.NameMetadata と完全に同じキー・意味に合わせる
+        // iOS側の signingPayload:
+        //   ephemeralPublicKey + encryptedAESKey + nonce(keyNonce) + tag(keyTag) + nameNonce + nameTag + nameCipher
+        // ここがズレると iOS で「署名検証に失敗しました」になる。
+        val json = org.json.JSONObject().apply {
+            put("ephemeralPublicKey", android.util.Base64.encodeToString(encKeyResult.ephemeralPublicKey, android.util.Base64.NO_WRAP))
+            put("encryptedAESKey", android.util.Base64.encodeToString(encKeyResult.encryptedAESKey, android.util.Base64.NO_WRAP))
+            put("nonce", android.util.Base64.encodeToString(encKeyResult.nonce, android.util.Base64.NO_WRAP))
+            put("tag", android.util.Base64.encodeToString(encKeyResult.tag, android.util.Base64.NO_WRAP))
+            put("nameNonce", android.util.Base64.encodeToString(encName.nonce, android.util.Base64.NO_WRAP))
+            put("nameTag", android.util.Base64.encodeToString(encName.tag, android.util.Base64.NO_WRAP))
+            put("nameCipher", android.util.Base64.encodeToString(encName.ciphertext, android.util.Base64.NO_WRAP))
+            put("signature", android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP))
+        }
+
+        // ✅ iOS は JSONEncoder の結果を base64url（-_, padding無し）で URL クエリに載せる。
+        // Android も同じく URL_SAFE + NO_PADDING にして、OS差で壊れないようにする。
+        val nameMetaBase64 = android.util.Base64.encodeToString(
+            json.toString().toByteArray(Charsets.UTF_8),
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
+        )
+
+        return CreateResult(
+            packageBytes = zipBytes.toByteArray(),
+            nameMetaBase64 = nameMetaBase64
+        )
+    }
+
+
     fun create(
         data: ByteArray,
         fileName: String,

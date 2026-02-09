@@ -3,6 +3,7 @@ package com.example.sharefilebc
 
 import android.content.Intent
 import android.net.Uri
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -40,6 +41,8 @@ class HomeActivity : ComponentActivity() {
     private data class DeepLinkParams(
         val folderId: String? = null,
         val fileId: String? = null,
+        /** iOS/Android共通: 一覧表示用の暗号化ファイル名メタ（base64url(JSON)） */
+        val nameMeta: String? = null,
         val senderPublicKey: String? = null,
         val recipientEmail: String? = null,
         val senderAddress: String? = null,
@@ -69,9 +72,6 @@ class HomeActivity : ComponentActivity() {
 
         // DeepLink解析（入口統一）
         handleDeepLink(intent, "onCreate")
-
-        // ✅ 公開鍵リンク（登録）: onCreate / onNewIntent 両対応
-        handlePublicKeyLink(intent, "onCreate")
 
         val deepLinkUri: Uri? = intent?.data
 
@@ -155,6 +155,10 @@ class HomeActivity : ComponentActivity() {
                 val composeScope = rememberCoroutineScope()
 
                 // ✅ 返金管理「閾値: 0」対策（既存DB互換）
+                // 過去に paymentThreshold を保存していない RefundTask が残っている場合、
+                // UIが contextJSON の optLong("threshold") に落ちて 0 と表示されることがある。
+                // DownloadScreen は task.paymentThreshold を優先表示するため、ここで埋めれば
+                // 画面側を大改修しなくても 0 表示は消える。
                 LaunchedEffect(Unit) {
                     composeScope.launch(Dispatchers.IO) {
                         runCatching {
@@ -226,12 +230,7 @@ class HomeActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-
-        // DeepLink解析（folder/file/share/refund系）
         handleDeepLink(intent, "onNewIntent")
-
-        // ✅ 公開鍵リンク（登録）: singleTask の onNewIntent 経由でも必ず走らせる
-        handlePublicKeyLink(intent, "onNewIntent")
     }
 
     @Deprecated("Activity Result API への移行推奨だが互換のため残置")
@@ -240,71 +239,24 @@ class HomeActivity : ComponentActivity() {
         EmailSender.onActivityResultBridge(this, requestCode, resultCode)
     }
 
-    /**
-     * ✅ 公開鍵URL (/pubkey/...) を受け取ったら DB に保存する。
-     * onCreate / onNewIntent の両方から呼ぶこと。
-     */
-    private fun handlePublicKeyLink(intent: Intent?, where: String) {
-        val uri = intent?.data
-        val pubKeyLink = PublicKeyLinkBuilder.parse(uri)
-
-        if (uri != null) {
-            Log.d(DL_TAG, "[$where][pubkey] uri=$uri")
-        }
-
-        if (pubKeyLink == null) {
-            Log.d(DL_TAG, "[$where][pubkey] not a pubkey link (skip)")
-            return
-        }
-
-        Log.d(
-            DL_TAG,
-            "[$where][pubkey] parsed email=${pubKeyLink.email} " +
-                    "derived=${pubKeyLink.derivedPublicKey.take(16)}... " +
-                    "trust=${pubKeyLink.trustLayerPublicKey.take(16)}... " +
-                    "folderId=${pubKeyLink.folderId}"
-        )
-
-        lifecycleScope.launch {
-            val db = AppDatabase.getDatabase(applicationContext)
-            withContext(Dispatchers.IO) {
-                db.emailKeyDao().upsert(
-                    EmailKeyEntity(
-                        email = pubKeyLink.email,
-                        derivedPublicKey = pubKeyLink.derivedPublicKey,
-                        trustLayerPublicKey = pubKeyLink.trustLayerPublicKey,
-                        folderIDFromPartner = pubKeyLink.folderId,
-                        isRefundRejected = false
-                    )
-                )
-            }
-            Toast.makeText(this@HomeActivity, "公開鍵を登録しました", Toast.LENGTH_LONG).show()
-
-            lifecycleScope.launch(Dispatchers.IO) {
-                runCatching {
-                    val keys = db.emailKeyDao().getAll().first()
-                    keys.forEach { key ->
-                        Log.d("DEBUG", "Email: ${key.email}")
-                        Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
-                        Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
-                    }
-                }.onFailure { e ->
-                    Log.e("DEBUG", "EmailKeyEntity dump failed", e)
-                }
-            }
-        }
-    }
-
     private fun handleDeepLink(intent: Intent?, where: String) {
         logDeepLinkIntent(where, intent)
 
         val uri = intent?.data
+
+        // ✅ 公開鍵リンク（登録）
+        // onCreate だけで処理すると、アプリが既に起動中（singleTask）で
+        // Gmail からリンクを開いた場合は onNewIntent しか呼ばれず登録されない。
+        // そのため DeepLink 入口(handleDeepLink)に統合して必ず処理する。
+        handlePublicKeyLink(where, uri)
+
         val paramsFromUri = parseDeepLink(uri)
 
         // intent.data 欠落対策：extrasもマージ
         val paramsFromExtra = DeepLinkParams(
             folderId = intent?.getStringExtra("folderId"),
             fileId = intent?.getStringExtra("fileId"),
+            nameMeta = intent?.getStringExtra("nameMeta"),
             senderPublicKey = intent?.getStringExtra("senderPublicKey"),
             recipientEmail = intent?.getStringExtra("recipientEmail"),
             senderAddress = intent?.getStringExtra("senderAddress"),
@@ -317,6 +269,7 @@ class HomeActivity : ComponentActivity() {
         val merged = DeepLinkParams(
             folderId = paramsFromExtra.folderId ?: paramsFromUri.folderId,
             fileId = paramsFromExtra.fileId ?: paramsFromUri.fileId,
+            nameMeta = paramsFromExtra.nameMeta ?: paramsFromUri.nameMeta,
             senderPublicKey = paramsFromExtra.senderPublicKey ?: paramsFromUri.senderPublicKey,
             recipientEmail = paramsFromExtra.recipientEmail ?: paramsFromUri.recipientEmail,
             senderAddress = paramsFromExtra.senderAddress ?: paramsFromUri.senderAddress,
@@ -333,9 +286,30 @@ class HomeActivity : ComponentActivity() {
         deepLinkParamsState.value = merged
         if (switchToShared) selectedTabState.value = BottomTab.Shared
 
+        // ✅ 重要：iOS→Android は「sharedWithMe」ではなく「anyoneリンク(公開)」で渡されるため、
+        // Drive同期だけでは受信一覧に絶対に出ない。
+        // そのため deep link を受け取った時点で received_files に fileId/nameMeta を保存し、
+        // さらに ShareProcessor（txid検証・返金等）を Activity の lifecycleScope で実行する。
+        // Compose の LaunchedEffect は「画面遷移/再compose」でキャンセルされ得るため、ここが本命。
+        if (switchToShared) {
+            lifecycleScope.launch {
+                runCatching {
+                    bootstrapReceivedFileFromDeepLink(applicationContext, merged)
+                }.onFailure { e ->
+                    Log.w(DL_TAG, "[$where] bootstrapReceivedFileFromDeepLink failed (continue)", e)
+                }
+
+                runCatching {
+                    processReceivedShareFromDeepLink(applicationContext, merged)
+                }.onFailure { e ->
+                    Log.e(DL_TAG, "[$where] processReceivedShareFromDeepLink failed", e)
+                }
+            }
+        }
+
         Log.d(
             DL_TAG,
-            "[$where] parsed folderId=${merged.folderId} fileId=${merged.fileId} uuid=${merged.uuid} txid=${merged.txid} refund=${merged.refundAddress}"
+            "[$where] parsed folderId=${merged.folderId} fileId=${merged.fileId} nameMeta=${merged.nameMeta?.let { "(len=${it.length})" } ?: "null"} uuid=${merged.uuid} txid=${merged.txid} refund=${merged.refundAddress}"
         )
         Log.d(DL_TAG, "[$where] switchedToShared=$switchToShared")
     }
@@ -362,8 +336,66 @@ class HomeActivity : ComponentActivity() {
         }
     }
 
+    private fun handlePublicKeyLink(where: String, uri: Uri?) {
+        val pubKeyLink = PublicKeyLinkBuilder.parse(uri) ?: return
+
+        lifecycleScope.launch {
+            runCatching {
+                val db = AppDatabase.getDatabase(applicationContext)
+                withContext(Dispatchers.IO) {
+                    db.emailKeyDao().upsert(
+                        EmailKeyEntity(
+                            email = pubKeyLink.email,
+                            derivedPublicKey = pubKeyLink.derivedPublicKey,
+                            trustLayerPublicKey = pubKeyLink.trustLayerPublicKey,
+                            folderIDFromPartner = pubKeyLink.folderId,
+                            isRefundRejected = false
+                        )
+                    )
+                }
+
+                Log.d(
+                    DL_TAG,
+                    "[$where] ✅ pubkey registered email=${pubKeyLink.email} derived=${pubKeyLink.derivedPublicKey.take(10)}... trust=${pubKeyLink.trustLayerPublicKey.take(10)}... folderId=${pubKeyLink.folderId}"
+                )
+                Toast.makeText(this@HomeActivity, "公開鍵を登録しました", Toast.LENGTH_LONG).show()
+
+                // デバッグ：DBに入ったか確認
+                lifecycleScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val keys = db.emailKeyDao().getAll().first()
+                        keys.forEach { key ->
+                            Log.d("DEBUG", "Email: ${key.email}")
+                            Log.d("DEBUG", "  derivedPublicKey(/1): ${key.derivedPublicKey.take(16)}...")
+                            Log.d("DEBUG", "  trustLayerPublicKey(/0): ${key.trustLayerPublicKey.take(16)}...")
+                        }
+                    }.onFailure { e ->
+                        Log.e("DEBUG", "EmailKeyEntity dump failed", e)
+                    }
+                }
+            }.onFailure { e ->
+                Log.e(DL_TAG, "[$where] ❌ pubkey registration failed", e)
+                Toast.makeText(this@HomeActivity, "公開鍵の登録に失敗しました", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun parseDeepLink(uri: Uri?): DeepLinkParams {
         if (uri == null) return DeepLinkParams()
+
+        // NOTE: iOS→Android の nameMeta が URL エンコードされていない場合、
+        // Uri.getQueryParameter() が '+' を空白に変換して Base64 が壊れることがある。
+        // そのため encodedQuery から生値を取り出す（%xx だけ decode、'+' は維持）。
+        fun getRawQueryParam(key: String): String? {
+            val encoded = uri.encodedQuery ?: return null
+            val prefix = "$key="
+            val start = encoded.indexOf(prefix)
+            if (start < 0) return null
+            val from = start + prefix.length
+            val to = encoded.indexOf('&', from).let { if (it < 0) encoded.length else it }
+            val raw = encoded.substring(from, to)
+            return Uri.decode(raw)
+        }
 
         val pathSegments = uri.pathSegments ?: emptyList()
 
@@ -374,10 +406,9 @@ class HomeActivity : ComponentActivity() {
         val folderIdFromQuery = uri.getQueryParameter("folderId")
 
         // /file/<ID> or /share/<ID>
-        val fileIdFromPath =
-            if (pathSegments.size >= 2 && (pathSegments[0] == "file" || pathSegments[0] == "share")) {
-                pathSegments[1]
-            } else null
+        val fileIdFromPath = if (pathSegments.size >= 2 && (pathSegments[0] == "file" || pathSegments[0] == "share")) {
+            pathSegments[1]
+        } else null
         val fileIdFromQuery = uri.getQueryParameter("fileId")
 
         // sender/to の別名も吸収（送信側の揺れ対策）
@@ -386,6 +417,10 @@ class HomeActivity : ComponentActivity() {
 
         val senderAddress = uri.getQueryParameter("senderAddress")
         val threshold = uri.getQueryParameter("threshold")?.toULongOrNull()
+
+        // iOS/Android: 一覧表示用 nameMeta（base64url JSON）
+        // getQueryParameter だと '+' が空白化することがあるので raw 抽出を優先
+        val nameMeta = getRawQueryParam("nameMeta") ?: uri.getQueryParameter("nameMeta")
 
         val uuid = uri.getQueryParameter("uuid")
 
@@ -413,6 +448,7 @@ class HomeActivity : ComponentActivity() {
         return DeepLinkParams(
             folderId = folderIdFromPath ?: folderIdFromQuery,
             fileId = fileIdFromPath ?: fileIdFromQuery,
+            nameMeta = nameMeta,
             senderPublicKey = senderKey,
             recipientEmail = recipientEmail,
             senderAddress = senderAddress,
@@ -421,5 +457,170 @@ class HomeActivity : ComponentActivity() {
             txid = txid,
             refundAddress = refund
         )
+    }
+
+    private suspend fun bootstrapReceivedFileFromDeepLink(context: Context, params: DeepLinkParams) {
+        val uuid = params.uuid?.trim().orEmpty()
+        val fileId = params.fileId?.trim().orEmpty()
+        val senderKey = params.senderPublicKey?.trim().orEmpty()
+
+        if (uuid.isBlank() || fileId.isBlank() || senderKey.isBlank()) {
+            Log.d(DL_TAG, "[bootstrap] skip: uuid/fileId/senderKey missing uuid=$uuid fileId=$fileId senderKeyEmpty=${senderKey.isBlank()}")
+            return
+        }
+
+        val db = AppDatabase.getDatabase(context)
+        withContext(Dispatchers.IO) {
+            val before = db.receivedFileDao().findByShareId(uuid)
+            val updated = if (before != null) {
+                before.copy(
+                    fileID = fileId,
+                    nameMetadata = params.nameMeta,
+                    senderPublicKey = senderKey
+                )
+            } else {
+                com.example.sharefilebc.data.ReceivedFileEntity(
+                    shareID = uuid,
+                    fileID = fileId,
+                    nameMetadata = params.nameMeta,
+                    senderPublicKey = senderKey,
+                    isDownloadAllowed = false,
+                    isDownloadBlocked = false,
+                    isDownloadEverAllowed = false
+                )
+            }
+            db.receivedFileDao().insert(updated)
+            Log.d(
+                DL_TAG,
+                "[bootstrap] upsert received_files: shareID=$uuid fileID=$fileId nameMetaLen=${params.nameMeta?.length ?: 0}"
+            )
+        }
+
+        // ✅ iOS→Android の「単体ファイル共有」では sharedWithMe フォルダが存在せず、
+        // received_folders が空のままだと DownloadScreen に何も出ない。
+        // そのため、deep link で fileId が来たタイミングで「擬似フォルダ（file:<fileId>）」を
+        // 可能なら Drive メタデータから補完して Room に入れる（DownloadScreen は表示専用のままでOK）。
+        runCatching {
+            upsertPseudoReceivedFolderForSharedFile(context, fileId)
+        }.onFailure { e ->
+            Log.w(DL_TAG, "[bootstrap] upsertPseudoReceivedFolderForSharedFile skipped: ${e.message}")
+        }
+    }
+
+    private suspend fun upsertPseudoReceivedFolderForSharedFile(context: Context, fileId: String) {
+        if (fileId.isBlank()) return
+
+        // ⚠ Drive API / Room はメインスレッド禁止。必ず IO で実行する。
+        withContext(Dispatchers.IO) {
+            val drive = com.example.sharefilebc.data.DriveServiceHelper.getDriveService(context)
+            if (drive == null) {
+                Log.w(DL_TAG, "[bootstrap] pseudoFolder: Drive service unavailable")
+                return@withContext
+            }
+            val db = AppDatabase.getDatabase(context)
+
+            // Drive から createdTime / owner を取得
+            val file = drive.files().get(fileId)
+                .setFields("id, createdTime, owners(displayName, emailAddress)")
+                .setSupportsAllDrives(true)
+                .execute()
+
+            val uploadMillis = file.createdTime?.value ?: System.currentTimeMillis()
+
+            val jst = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+            val dateOnlyFormatter = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).apply {
+                timeZone = jst
+            }
+            val dateTimeFormatter = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).apply {
+                timeZone = jst
+            }
+
+            val folderName = dateOnlyFormatter.format(java.util.Date(uploadMillis))
+            val uploadDateTime = dateTimeFormatter.format(java.util.Date(uploadMillis))
+            val deleteDateTime = dateTimeFormatter.format(java.util.Date(uploadMillis + 7L * 24 * 60 * 60 * 1000))
+
+            val owner = file.owners?.firstOrNull()
+            val senderName = owner?.displayName?.takeIf(String::isNotBlank)
+                ?: owner?.emailAddress
+                ?: "Unknown Sender"
+
+            val pseudoFolderId = "file:$fileId"
+
+            val receivedDao = db.receivedFolderDao()
+            val existing = receivedDao.findByFolderId(pseudoFolderId)
+            val entity = com.example.sharefilebc.data.ReceivedFolderEntity(
+                folderId = pseudoFolderId,
+                folderName = folderName,
+                senderName = senderName,
+                uploadDateTime = uploadDateTime,
+                deleteDateTime = deleteDateTime
+            )
+
+            if (existing == null) {
+                receivedDao.insert(entity)
+                Log.d(DL_TAG, "[bootstrap] inserted received_folders pseudo=$pseudoFolderId sender=$senderName")
+            } else {
+                receivedDao.insert(entity.copy(id = existing.id))
+                Log.d(DL_TAG, "[bootstrap] updated received_folders pseudo=$pseudoFolderId sender=$senderName")
+            }
+
+            // received_files 側も folderID を揃える（DownloadScreen のグルーピング用）
+            val rf = db.receivedFileDao().findByFileId(fileId)
+            if (rf != null && rf.folderID != pseudoFolderId) {
+                db.receivedFileDao().insert(rf.copy(folderID = pseudoFolderId))
+                Log.d(DL_TAG, "[bootstrap] normalized received_files.folderID to $pseudoFolderId")
+            }
+        }
+    }
+
+    private suspend fun processReceivedShareFromDeepLink(context: Context, params: DeepLinkParams) {
+        val uuid = params.uuid?.trim().orEmpty()
+        val senderKey = params.senderPublicKey?.trim().orEmpty()
+        val txids = params.txid
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            ?: emptyList()
+
+        if (uuid.isBlank() || senderKey.isBlank() || txids.isEmpty()) {
+            Log.d(DL_TAG, "[DL process] skip: missing uuid/sender/txid uuid=$uuid senderKeyEmpty=${senderKey.isBlank()} txids=${txids.size}")
+            return
+        }
+
+        // ✅ 0/欠落の threshold は Swift のデフォルト(=1)相当の WalletSettings を使う
+        val threshold = params.threshold
+            ?.takeIf { it > 0uL }
+            ?: WalletSettingsManager.getInstance(context).getPaymentThreshold()
+
+        // ✅ 既に processed の場合は skip（重複トークン処理防止）
+        val db = AppDatabase.getDatabase(context)
+        val alreadyProcessed = withContext(Dispatchers.IO) {
+            val hasReceived = db.receivedFileDao().findByShareId(uuid) != null
+            val hasRefund = db.refundTaskDao().findByShareId(uuid) != null
+            // hasReceived だけだと bootstrap で true になってしまうので、
+            // 「downloadフラグが更新済み」か「refundTaskがある」かで判断する
+            val received = db.receivedFileDao().findByShareId(uuid)
+            val hasFlags = received?.isDownloadEverAllowed == true || received?.isDownloadBlocked == true
+            hasFlags || hasRefund
+        }
+        if (alreadyProcessed) {
+            Log.d(DL_TAG, "[DL process] skip by DB processed guard uuid=$uuid")
+            return
+        }
+
+        Log.d(DL_TAG, "[DL process] processReceivedShare start uuid=$uuid txids=${txids.size} th=$threshold")
+
+        val result = ShareProcessor.processReceivedShare(
+            context = context,
+            uuid = uuid,
+            txids = txids,
+            senderPublicKey = senderKey,
+            refundAddress = params.refundAddress,
+            threshold = threshold,
+            colorId = Constants.Strings.tokenColorId
+        )
+
+        Log.d(DL_TAG, "[DL process] processReceivedShare end uuid=$uuid result=$result")
     }
 }

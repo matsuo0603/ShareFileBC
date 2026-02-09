@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
+import com.example.sharefilebc.data.ReceivedFileEntity
 import com.example.sharefilebc.data.ReceivedFolderEntity
 import com.google.api.services.drive.model.File
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +34,8 @@ object IncomingFilesSyncer {
         val txids: List<String>,
         val senderPublicKey: String,
         val refundAddress: String?,
-        val threshold: ULong
+        val threshold: ULong,
+        val nameMeta: String? = null
     )
 
     suspend fun syncOnce(context: Context): Int = withContext(Dispatchers.IO) {
@@ -56,10 +58,25 @@ object IncomingFilesSyncer {
 
         val db = AppDatabase.getDatabase(context)
         val receivedDao = db.receivedFolderDao()
+        val receivedFileDao = db.receivedFileDao()
 
         val sharedFolders = drive.files().list()
             .setQ("sharedWithMe and trashed=false and mimeType='application/vnd.google-apps.folder'")
             .setFields("files(id, name, createdTime, owners(displayName, emailAddress))")
+            .setSupportsAllDrives(true)
+            .setIncludeItemsFromAllDrives(true)
+            .execute()
+            .files ?: emptyList()
+
+        // ✅ Swift版は「ファイル単体共有（folder権限なし）」が前提。
+        // Android側も sharedWithMe の *ファイル* を拾わないと、
+        // 受信一覧に何も出ず、トークンだけ増える状態になる。
+        val sharedFiles = drive.files().list()
+            .setQ("sharedWithMe and trashed=false and mimeType!='application/vnd.google-apps.folder'")
+            // parents を取っておく（フォルダ共有の中のファイルと単体共有を区別するため）
+            .setFields("files(id, name, createdTime, owners(displayName, emailAddress), description, parents)")
+            .setSupportsAllDrives(true)
+            .setIncludeItemsFromAllDrives(true)
             .execute()
             .files ?: emptyList()
 
@@ -75,7 +92,9 @@ object IncomingFilesSyncer {
             // ✅ description を読むため fields に description を追加
             val childFiles = drive.files().list()
                 .setQ("'${folder.id}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'")
-                .setFields("files(id, name, createdTime, owners(displayName, emailAddress), description)")
+                .setFields("files(id, name, createdTime, owners(displayName, emailAddress), description, parents)")
+                .setSupportsAllDrives(true)
+                .setIncludeItemsFromAllDrives(true)
                 .execute()
                 .files ?: emptyList()
 
@@ -115,14 +134,33 @@ object IncomingFilesSyncer {
             }
 
             // ✅ ★ここが本題：自動受信でも processReceivedShare を実行
-            autoProcessSharesFromDescriptions(context, childFiles)
+            autoProcessSharesFromDescriptions(context, childFiles, parentFolderId = folder.id)
         }
+
+        // ✅ 追加：sharedWithMe ファイル（フォルダ外）も処理する
+        // - description から shareメタを復元
+        // - received_files に fileId 等を保存
+        // - received_folders に「擬似フォルダ（file:<fileId>）」を作成（DownloadScreen を変更せず一覧に出す）
+        // - processReceivedShare を実行（トークン反映 / 返金タスクなど）
+        upsertReceivedFoldersForSharedFiles(
+            context = context,
+            receivedDao = receivedDao,
+            files = sharedFiles,
+            formatter = formatter,
+            expirationMillis = expirationMillis
+        )
+
+        autoProcessSharesFromDescriptions(context, sharedFiles, parentFolderId = null)
 
         Log.d(LogTags.TAG_SYNC_INCOMING, "end")
         upsertCount
     }
 
-    private suspend fun autoProcessSharesFromDescriptions(context: Context, files: List<File>) {
+    private suspend fun autoProcessSharesFromDescriptions(
+        context: Context,
+        files: List<File>,
+        parentFolderId: String?
+    ) {
         if (files.isEmpty()) return
 
         for (f in files) {
@@ -139,6 +177,15 @@ object IncomingFilesSyncer {
                 .toLong()
 
             val meta = parseShareMeta(desc, defaultThreshold) ?: continue
+
+            // ✅ received_files に fileId / fileName / nameMeta を保存して
+            // 「フォルダ共有なし」でも受信一覧に表示できるようにする。
+            upsertReceivedFileRow(
+                context = context,
+                file = f,
+                meta = meta,
+                parentFolderId = parentFolderId
+            )
 
             Log.d(
                 LogTags.TAG_SYNC_INCOMING,
@@ -161,6 +208,99 @@ object IncomingFilesSyncer {
                 val wm = WalletManager.getInstance(context)
                 val bal = wm.getBalanceAfterSync(colorId = Constants.Strings.tokenColorId)
                 Log.d(LogTags.TAG_SYNC_INCOMING, "[BALANCE] after auto processReceivedShare = $bal")
+            }
+        }
+    }
+
+    private suspend fun upsertReceivedFileRow(
+        context: Context,
+        file: File,
+        meta: ShareMeta,
+        parentFolderId: String?
+    ) {
+        val db = AppDatabase.getDatabase(context)
+        val dao = db.receivedFileDao()
+
+        // ✅ DownloadScreen のグルーピングは received_folders.folderId と received_files.folderID を揃える前提。
+        // フォルダ共有の場合：parentFolderId を採用
+        // 単体ファイル共有の場合：擬似フォルダID（file:<fileId>）を採用
+        val normalizedFolderId = parentFolderId?.takeIf { it.isNotBlank() }
+            ?: "file:${file.id}" // folder権限が無い共有でも一覧に出すため
+
+        // 既に ShareProcessor だけで作られた行がある可能性があるので上書きする
+        val existing = dao.findByShareId(meta.uuid)
+        val updated = if (existing != null) {
+            existing.copy(
+                folderID = normalizedFolderId,
+                fileID = file.id,
+                fileName = file.name,
+                nameMetadata = meta.nameMeta,
+                senderPublicKey = meta.senderPublicKey
+            )
+        } else {
+            ReceivedFileEntity(
+                shareID = meta.uuid,
+                folderID = normalizedFolderId,
+                fileID = file.id,
+                fileName = file.name,
+                nameMetadata = meta.nameMeta,
+                senderPublicKey = meta.senderPublicKey
+            )
+        }
+
+        dao.insert(updated)
+    }
+
+    /**
+     * ✅ 単体ファイル共有（sharedWithMe のフォルダ外ファイル）を DownloadScreen に出すために、
+     * received_folders に擬似フォルダ行（folderId = file:<fileId>）を作成する。
+     */
+    private suspend fun upsertReceivedFoldersForSharedFiles(
+        context: Context,
+        receivedDao: com.example.sharefilebc.data.ReceivedFolderDao,
+        files: List<File>,
+        formatter: SimpleDateFormat,
+        expirationMillis: Long
+    ) {
+        if (files.isEmpty()) return
+
+        val jst = TimeZone.getTimeZone("Asia/Tokyo")
+        val dateOnlyFormatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = jst }
+
+        for (f in files) {
+            // description が無いファイルは ShareFileBC の共有物である保証がないため、ここでは一覧に出さない
+            val desc = f.description?.trim().orEmpty()
+            if (desc.isBlank()) continue
+
+            val uploadMillis = f.createdTime?.value ?: System.currentTimeMillis()
+            val uploadDateTime = formatter.format(Date(uploadMillis))
+            val deleteDateTime = formatter.format(Date(uploadMillis + expirationMillis))
+            val dateOnly = dateOnlyFormatter.format(Date(uploadMillis))
+
+            val owner = f.owners?.firstOrNull()
+            val senderName = owner?.displayName?.takeIf(String::isNotBlank)
+                ?: owner?.emailAddress
+                ?: "Unknown Sender"
+
+            val pseudoFolderId = "file:${f.id}"
+            val entity = ReceivedFolderEntity(
+                folderId = pseudoFolderId,
+                folderName = dateOnly,
+                senderName = senderName,
+                uploadDateTime = uploadDateTime,
+                deleteDateTime = deleteDateTime
+            )
+
+            val existing = receivedDao.findByFolderId(pseudoFolderId)
+            if (existing == null) {
+                receivedDao.insert(entity)
+            } else if (
+                existing.senderName != entity.senderName ||
+                existing.folderName != entity.folderName ||
+                existing.uploadDateTime != entity.uploadDateTime ||
+                existing.deleteDateTime != entity.deleteDateTime
+            ) {
+                receivedDao.insert(entity.copy(id = existing.id))
             }
         }
     }
@@ -192,6 +332,9 @@ object IncomingFilesSyncer {
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
 
+            // Swift版 URL 由来で nameMeta が入ることがある（Androidから送る場合は空でもOK）
+            val nameMeta = uri.getQueryParameter("nameMeta")?.trim()?.takeIf { it.isNotBlank() }
+
             val txids = buildList {
                 uri.getQueryParameter("txid")
                     ?.split(",")
@@ -215,7 +358,8 @@ object IncomingFilesSyncer {
                 txids = txids,
                 senderPublicKey = sender,
                 refundAddress = refund,
-                threshold = threshold
+                threshold = threshold,
+                nameMeta = nameMeta
             )
         } catch (e: Exception) {
             Log.w(TAG, "parseShareMeta failed: ${e.message}")

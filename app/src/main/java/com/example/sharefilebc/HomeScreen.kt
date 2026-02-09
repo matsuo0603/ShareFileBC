@@ -212,7 +212,10 @@ fun HomeScreen(
                         isUploading = false
                         when (result) {
                             is UploadResult.Success -> {
-                                val (fileName, fileId, folderId) = result
+                                val fileName = result.fileName
+                                val fileId = result.fileId
+                                val folderId = result.folderId
+                                val nameMetaBase64 = result.nameMetaBase64
                                 val myKeyEntity = withContext(Dispatchers.IO) {
                                     db.myPublicKeyDao().getPrimary()
                                 }
@@ -314,7 +317,8 @@ fun HomeScreen(
                                             threshold = threshold,
                                             senderAddress = refundAddress,
                                             uuid = uuid,
-                                            txid = txid
+                                            txid = txid,
+                                            nameMetaBase64 = nameMetaBase64
                                         )
 
                                         Toast.makeText(

@@ -16,8 +16,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * これにより、画面の再Compose / タブ切替 / 画面遷移で LaunchedEffect がキャンセルされても
  * processReceivedShare が途中で中断されにくくなる（LeftCompositionCancellationException 対策）。
+ *
+ * ⚠ Redeclaration 対策としてクラス名を SharedScreenViewModel から変更しています。
  */
-class SharedScreenViewModel(application: Application) : AndroidViewModel(application) {
+class SharedDeepLinkViewModel(application: Application) : AndroidViewModel(application) {
 
     private val dlTag = "DL_DEBUG"
 
