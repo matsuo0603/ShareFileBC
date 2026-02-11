@@ -227,24 +227,63 @@ object IncomingFilesSyncer {
         val normalizedFolderId = parentFolderId?.takeIf { it.isNotBlank() }
             ?: "file:${file.id}" // folder権限が無い共有でも一覧に出すため
 
+        // ✅ nameMeta があれば「ファイル名だけ」先に復号して一覧表示で使う。
+        // 失敗した場合は file.name(securePackage.vpfs) のままにし、原因は nameMetadataError に残す。
+        val decodedNameResult = runCatching {
+            Log.d(TAG, "🔍 Attempting to decrypt filename for shareId=${meta.uuid}, fileId=${file.id}")
+            val nm = meta.nameMeta?.trim().orEmpty()
+            if (nm.isBlank()) {
+                Log.d(TAG, "   nameMeta is blank, skipping decrypt")
+                return@runCatching null
+            }
+            Log.d(TAG, "   nameMeta length: ${nm.length}")
+
+            val kd = KeyDerivation.getInstance(context)
+            val recipientPriv = kd.getCurrentPrivateKeyHex("m/44'/0'/0'/0/0")
+            Log.d(TAG, "   recipientPrivKey: ${recipientPriv.take(16)}...")
+            Log.d(TAG, "   senderPublicKey: ${meta.senderPublicKey.take(16)}...")
+
+            com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
+                nameMetaBase64Url = nm,
+                recipientPrivateKeyHex = recipientPriv,
+                signerPublicKeyHex = meta.senderPublicKey
+            )
+        }
+
+        val decodedName: String? = decodedNameResult.getOrNull()
+        val decodedNameError: String? = decodedNameResult.exceptionOrNull()?.let { e ->
+            Log.e(TAG, "❌ Failed to decrypt filename: ${e.javaClass.simpleName}: ${e.message}", e)
+            // 次回の切り分け用に要点だけ残す
+            "nameMeta decrypt failed: ${e.message}"
+        }
+
+        val displayFileName = decodedName ?: file.name
+
+        if (decodedName != null) {
+            Log.d(TAG, "✅ Filename decrypted successfully: $decodedName")
+        } else {
+            Log.w(TAG, "⚠️ Using original filename: ${file.name}, error: $decodedNameError")
+        }
         // 既に ShareProcessor だけで作られた行がある可能性があるので上書きする
         val existing = dao.findByShareId(meta.uuid)
         val updated = if (existing != null) {
             existing.copy(
                 folderID = normalizedFolderId,
                 fileID = file.id,
-                fileName = file.name,
+                fileName = displayFileName,
                 nameMetadata = meta.nameMeta,
-                senderPublicKey = meta.senderPublicKey
+                senderPublicKey = meta.senderPublicKey,
+                nameMetadataError = existing.nameMetadataError ?: decodedNameError
             )
         } else {
             ReceivedFileEntity(
                 shareID = meta.uuid,
                 folderID = normalizedFolderId,
                 fileID = file.id,
-                fileName = file.name,
+                fileName = displayFileName,
                 nameMetadata = meta.nameMeta,
-                senderPublicKey = meta.senderPublicKey
+                senderPublicKey = meta.senderPublicKey,
+                nameMetadataError = decodedNameError
             )
         }
 

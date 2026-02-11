@@ -22,9 +22,18 @@ import java.security.MessageDigest
  */
 class KeyDerivation private constructor(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     companion object {
         private const val TAG = "TapyrusWalletManager"
-        private const val DEFAULT_PATH = "m/44'/0'/0'/0/0"
+        // ✅ Swift版と同じ「固定パスで鍵を確定」する。
+        // - derivedKey: 暗号化(ECIES)で相手に渡す公開鍵 / 受信側の復号で使う秘密鍵
+        // - trustLayerKey: トラストレイヤ用（別用途）
+        const val DERIVED_KEY_PATH = "m/44'/0'/0'/0/0"
+        const val TRUST_LAYER_PATH = "m/44'/0'/0'/0/1"
+
+        // 互換のための既存引数: 省略時は derivedKey を指す
+        private const val DEFAULT_PATH = DERIVED_KEY_PATH
 
         @Volatile
         private var instance: com.example.sharefilebc.KeyDerivation? = null
@@ -35,7 +44,13 @@ class KeyDerivation private constructor(context: Context) {
             }
     }
 
-    private val keyManager: KeyManager = KeyManager.getInstance(context.applicationContext)
+    private val keyManager: KeyManager = KeyManager.getInstance(appContext)
+
+    /**
+     * master xprv の短い指紋（ログ用）
+     * ※ 秘密鍵そのものは出さない。
+     */
+    private fun masterFp(): String = keyManager.getMasterXprvFingerprintOrNull() ?: "(null)"
 
     // ============================================================
     //  公開インターフェース
@@ -60,7 +75,7 @@ class KeyDerivation private constructor(context: Context) {
 
         Log.d(
             TAG,
-            "currentAddress(path=$DEFAULT_PATH) = $address (pubKey=$compressedPubKeyHex)"
+            "currentAddress(path=$DEFAULT_PATH) = $address (pubKey=$compressedPubKeyHex, masterFp=${masterFp()})"
         )
         return address
     }
@@ -75,7 +90,7 @@ class KeyDerivation private constructor(context: Context) {
         val compressedPubKeyHex = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv)
         Log.d(
             TAG,
-            "currentPublicKeyHex(path=$path) = $compressedPubKeyHex"
+            "currentPublicKeyHex(path=$path) = $compressedPubKeyHex (masterFp=${masterFp()})"
         )
         return compressedPubKeyHex
     }
@@ -95,9 +110,15 @@ class KeyDerivation private constructor(context: Context) {
         val privKeyBytes = extractRawPrivateKeyFromXprv(childXprv)
         val privKeyHex = privKeyBytes.toHexString()
 
+        // 切り分け用：この秘密鍵に対応する圧縮公開鍵を計算して出す
+        val pubFromPrivHex = runCatching {
+            val privInt = java.math.BigInteger(1, privKeyBytes)
+            PublicKeyUtils.compressedPublicKeyFromPrivate(privInt).toHexString()
+        }.getOrElse { "(failed)" }
+
         Log.d(
             TAG,
-            "currentPrivateKeyHex(path=$path) = ${maskSensitiveHex(privKeyHex)}"
+            "currentPrivateKeyHex(path=$path) = ${maskSensitiveHex(privKeyHex)} pubFromPriv=$pubFromPrivHex (masterFp=${masterFp()})"
         )
         return privKeyHex
     }
@@ -116,11 +137,18 @@ class KeyDerivation private constructor(context: Context) {
      */
     private fun getChildXprvForPath(path: String): String {
         // 1. master xprv を取得（なければ KeyManager 側で生成される）
-        val masterXprv = keyManager.getOrCreateMasterXprv()
+        // ✅ WalletManager と同じ networkMode を使う（DEV/PRODズレで鍵が変わるのを防ぐ）
+        val networkMode = runCatching {
+            WalletSettingsManager.getInstance(appContext).getNetworkConfig().networkMode
+        }.getOrElse { com.chaintope.tapyrus.wallet.Network.PROD }
+
+        val masterXprv = keyManager.getOrCreateMasterXprv(networkMode)
 
         // 2. 規定パスの子 xprv を導出
         return KeyDerivation.deriveChildXprv(masterXprv, path)
     }
+
+    // appContext を保持しているので、Context参照がブレない
 
     /**
      * 圧縮公開鍵 (33 byte) から P2PKH アドレス文字列を生成する。

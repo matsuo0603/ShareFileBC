@@ -1,8 +1,13 @@
 package com.example.sharefilebc.crypto
 
+import android.util.Base64
 import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import com.example.sharefilebc.crypto.HexUtils.toHexString
+import org.bouncycastle.crypto.params.ECDomainParameters
+import org.bouncycastle.crypto.params.ECPrivateKeyParameters
+import org.bouncycastle.crypto.params.ECPublicKeyParameters
 import org.bouncycastle.jce.ECNamedCurveTable
+import org.bouncycastle.jce.interfaces.ECPrivateKey
 import org.bouncycastle.jce.interfaces.ECPublicKey
 import org.bouncycastle.jce.spec.ECPrivateKeySpec
 import org.bouncycastle.jce.spec.ECPublicKeySpec
@@ -12,14 +17,24 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
-import javax.crypto.KeyAgreement
 
 /**
  * ECIES (secp256k1) による AES 鍵のカプセル化
  *
- *  - 受信者公開鍵 + 送信者エフェメラル秘密鍵 → ECDH
- *  - sharedSecret を SHA-256
- *  - その鍵で AES-GCM により AES鍵を暗号化
+ * ✅ Swift(P256K) 互換の実装
+ *
+ * Swift版(ShareFileBC/Crypto/ECIES.swift) は ECDH の sharedSecret を
+ * `sharedSecret.withUnsafeBytes { Data($0) }` としてバイト列化し、
+ * そのバイト列を SHA-256 して AES-GCM の鍵として使っています。
+ *
+ * 重要: P256K の sharedSecretBytes は「共有点の圧縮形式(33byte)」ではありません。
+ * 実体は ECDH の共有点から導かれる 32byte のバイト列（実装上は X座標相当）です。
+ *
+ * 以前の Android 実装では sharedPoint を compressed(33B) にして SHA-256 していたため、
+ * iOS と derivedKey が一致せず、AES-GCM の mac check failed / authenticationFailure が
+ * 発生していました。
+ *
+ * ここでは Swift と同じく、共有点の X 座標を 32byte big-endian に正規化して SHA-256 します。
  */
 object ECIES {
 
@@ -36,50 +51,43 @@ object ECIES {
     )
 
     private const val CURVE_NAME = "secp256k1"
-
     private val secureRandom = SecureRandom()
 
     /**
      * recipientPublicKeyHex : 圧縮公開鍵33byteのHEX
      */
     fun encryptAESKey(aesKey: ByteArray, recipientPublicKeyHex: String): EncryptedResult {
-        // 1. 受信者公開鍵 HEX → byte[] → PublicKey
+        // 1) 受信者公開鍵
         val recipientPubKeyBytes = recipientPublicKeyHex.hexToByteArray()
-        val recipientPublicKey = createECPublicKey(recipientPubKeyBytes)
+        val recipientPublicKey = createECPublicKey(recipientPubKeyBytes) as ECPublicKey
 
-        // 2. エフェメラル鍵ペア生成（BCの secp256k1 を使用）
+        // 2) エフェメラル鍵ペア生成（BCの secp256k1）
         val ephemeralKeyPair = generateEphemeralKeyPair()
-        val ephPrivateKey = ephemeralKeyPair.private
+        val ephPrivateKey = ephemeralKeyPair.private as ECPrivateKey
         val ephPublicKey = ephemeralKeyPair.public as ECPublicKey
 
-        // 3. ECDH 共有秘密
-        val sharedSecret = generateSharedSecret(ephPrivateKey, recipientPublicKey)
+        // 3) sharedSecret(32B) を使って derivedKey を作る（Swift互換）
+        val sharedBytes = computeSharedSecret32(
+            privateKey = ephPrivateKey,
+            publicKey = recipientPublicKey
+        )
+        val derivedKey = sha256(sharedBytes)
 
-        // 4. sharedSecret → SHA-256 → 派生 AES 鍵
-        val derivedKey = sha256(sharedSecret)
-
-        // 5. 派生 AES 鍵で aesKey を AES-GCM 暗号化
+        // 4) 派生鍵で AES鍵(32B) を AES-GCM 暗号化
         val enc = AESGCMCrypto.encrypt(aesKey, derivedKey)
 
+        val ephCompressed = ephPublicKey.q.getEncoded(true)
         println("🔁 ECIES encrypt recipientPubKey: $recipientPublicKeyHex")
-        val ephemeralCompressed = ephPublicKey.q.getEncoded(true)
-        println("🔁 ECIES encrypt ephemeralPubKey: ${ephemeralCompressed.toHexString()}")
-        println("🔁 ECIES encrypt sharedSecretHash: ${
-            android.util.Base64.encodeToString(derivedKey, android.util.Base64.NO_WRAP)
-        }")
-        println("🔁 ECIES encrypt nonce: ${
-            android.util.Base64.encodeToString(enc.nonce, android.util.Base64.NO_WRAP)
-        }")
-        println("🔁 ECIES encrypt ciphertext: ${
-            android.util.Base64.encodeToString(enc.ciphertext, android.util.Base64.NO_WRAP)
-        }")
-        println("🔁 ECIES encrypt tag: ${
-            android.util.Base64.encodeToString(enc.tag, android.util.Base64.NO_WRAP)
-        }")
+        println("🔁 ECIES encrypt ephemeralPubKey: ${ephCompressed.toHexString()}")
+        println("🔁 ECIES encrypt sharedSecret(len=${sharedBytes.size}): ${Base64.encodeToString(sharedBytes, Base64.NO_WRAP)}")
+        println("🔁 ECIES encrypt sharedSecretHash: ${Base64.encodeToString(derivedKey, Base64.NO_WRAP)}")
+        println("🔁 ECIES encrypt nonce: ${Base64.encodeToString(enc.nonce, Base64.NO_WRAP)}")
+        println("🔁 ECIES encrypt ciphertext: ${Base64.encodeToString(enc.ciphertext, Base64.NO_WRAP)}")
+        println("🔁 ECIES encrypt tag: ${Base64.encodeToString(enc.tag, Base64.NO_WRAP)}")
 
         return EncryptedResult(
             // DER(X.509) ではなく圧縮形式（33byte）の公開鍵を格納する
-            ephemeralPublicKey = ephemeralCompressed,
+            ephemeralPublicKey = ephCompressed,
             encryptedAESKey = enc.ciphertext,
             nonce = enc.nonce,
             tag = enc.tag
@@ -91,29 +99,30 @@ object ECIES {
      * recipientPrivateKeyHex: 32byte 秘密鍵 HEX
      */
     fun decryptAESKey(result: EncryptedResult, recipientPrivateKeyHex: String): ByteArray {
-        // 1. 秘密鍵 HEX → PrivateKey
+        // 1) 受信者秘密鍵
         val privKeyBytes = recipientPrivateKeyHex.hexToByteArray()
-        val recipientPrivateKey = createECPrivateKey(privKeyBytes)
+        val recipientPrivateKey = createECPrivateKey(privKeyBytes) as ECPrivateKey
 
-        // 2. エフェメラル公開鍵 byte[] → PublicKey
-        val ephemeralPublicKey = createECPublicKeyFromEncoded(result.ephemeralPublicKey)
+        // 2) エフェメラル公開鍵（圧縮33B）
+        val ephemeralPublicKey = createECPublicKeyFromEncoded(result.ephemeralPublicKey) as ECPublicKey
 
-        // 3. ECDH 共有秘密
-        val sharedSecret = generateSharedSecret(recipientPrivateKey, ephemeralPublicKey)
-
-        // 4. sharedSecret → SHA-256
-        val derivedKey = sha256(sharedSecret)
+        // 3) sharedSecret(32B) → derivedKey（Swift互換）
+        val sharedBytes = computeSharedSecret32(
+            privateKey = recipientPrivateKey,
+            publicKey = ephemeralPublicKey
+        )
+        val derivedKey = sha256(sharedBytes)
 
         val fingerprint = sha256(privKeyBytes)
-        println("🔁 ECIES decrypt recipientPrivKeyFingerprint: ${
-            android.util.Base64.encodeToString(fingerprint, android.util.Base64.NO_WRAP)
-        }")
-        println("🔁 ECIES decrypt ephemeralPubKey: ${result.ephemeralPublicKey.toHexString()}")
-        println("🔁 ECIES decrypt sharedSecretHash: ${
-            android.util.Base64.encodeToString(derivedKey, android.util.Base64.NO_WRAP)
-        }")
+        println("🔁 ECIES decrypt recipientPrivKeyFingerprint: ${Base64.encodeToString(fingerprint, Base64.NO_WRAP)}")
+        println("🔁 ECIES decrypt ephemeralPubKey(len=${result.ephemeralPublicKey.size}): ${result.ephemeralPublicKey.toHexString()}")
+        println("🔁 ECIES decrypt sharedSecret(len=${sharedBytes.size}): ${Base64.encodeToString(sharedBytes, Base64.NO_WRAP)}")
+        println("🔁 ECIES decrypt sharedSecretHash: ${Base64.encodeToString(derivedKey, Base64.NO_WRAP)}")
+        println("🔁 ECIES decrypt nonce: ${Base64.encodeToString(result.nonce, Base64.NO_WRAP)}")
+        println("🔁 ECIES decrypt ciphertext: ${Base64.encodeToString(result.encryptedAESKey, Base64.NO_WRAP)}")
+        println("🔁 ECIES decrypt tag: ${Base64.encodeToString(result.tag, Base64.NO_WRAP)}")
 
-        // 5. 派生 AES 鍵で AES 鍵を復号
+        // 4) 派生鍵で AES鍵を復号
         val aesKey = AESGCMCrypto.decrypt(
             ciphertext = result.encryptedAESKey,
             nonce = result.nonce,
@@ -121,9 +130,7 @@ object ECIES {
             key = derivedKey
         )
 
-        println("🔁 ECIES decrypt recoveredAESKey: ${
-            android.util.Base64.encodeToString(aesKey, android.util.Base64.NO_WRAP)
-        }")
+        println("🔁 ECIES decrypt recoveredAESKey: ${Base64.encodeToString(aesKey, Base64.NO_WRAP)}")
         return aesKey
     }
 
@@ -132,15 +139,15 @@ object ECIES {
     private fun generateEphemeralKeyPair(): KeyPair {
         val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
         val provider = BouncyCastleInitializer.ensure()
-        val kpg = KeyPairGenerator.getInstance("EC", provider)  // ★ AndroidOpenSSL ではなく BC
+        val kpg = KeyPairGenerator.getInstance("EC", provider)
         kpg.initialize(params, secureRandom)
         return kpg.generateKeyPair()
     }
 
-    private fun createECPublicKey(compressedOrEncoded: ByteArray): java.security.PublicKey {
+    private fun createECPublicKey(compressed: ByteArray): java.security.PublicKey {
         val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
         val curve = params.curve
-        val point = curve.decodePoint(compressedOrEncoded) // 圧縮形式を復元
+        val point = curve.decodePoint(compressed)
         val pubSpec = ECPublicKeySpec(point, params)
 
         val provider = BouncyCastleInitializer.ensure()
@@ -149,7 +156,7 @@ object ECIES {
     }
 
     private fun createECPublicKeyFromEncoded(encoded: ByteArray): java.security.PublicKey {
-        // 今回は圧縮公開鍵を想定しているので、そのまま上の関数を使う
+        // 今回は圧縮公開鍵(33B)を想定
         return createECPublicKey(encoded)
     }
 
@@ -162,15 +169,43 @@ object ECIES {
         return kf.generatePrivate(privSpec)
     }
 
-    private fun generateSharedSecret(
-        privateKey: java.security.PrivateKey,
-        publicKey: java.security.PublicKey
-    ): ByteArray {
-        val provider = BouncyCastleInitializer.ensure()
-        val ka = KeyAgreement.getInstance("ECDH", provider)
-        ka.init(privateKey)
-        ka.doPhase(publicKey, true)
-        return ka.generateSecret()
+    /**
+     * ECDH の共有秘密を 32byte で返す。
+     * Swift(P256K) の sharedSecret.withUnsafeBytes { Data($0) } と互換にするため、
+     * 共有点の X 座標を 32byte big-endian に正規化する。
+     */
+    private fun computeSharedSecret32(privateKey: ECPrivateKey, publicKey: ECPublicKey): ByteArray {
+        val params = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
+        val domain = ECDomainParameters(params.curve, params.g, params.n, params.h)
+
+        val d = privateKey.d
+        val q = publicKey.q
+
+        val privParams = ECPrivateKeyParameters(d, domain)
+        val pubParams = ECPublicKeyParameters(q, domain)
+
+        val sharedPoint = pubParams.q.multiply(privParams.d).normalize()
+        val x = sharedPoint.affineXCoord.toBigInteger()
+        return bigIntToFixed32(x)
+    }
+
+    private fun bigIntToFixed32(v: BigInteger): ByteArray {
+        // v.toByteArray() は符号ビットが入るので調整して 32byte に揃える
+        val raw = v.toByteArray()
+
+        // 先頭の 0x00（符号用）を落とす
+        val unsigned = if (raw.isNotEmpty() && raw[0] == 0.toByte() && raw.size > 32) {
+            raw.copyOfRange(1, raw.size)
+        } else {
+            raw
+        }
+
+        // 32byte に左詰め（big-endian）
+        return when {
+            unsigned.size == 32 -> unsigned
+            unsigned.size < 32 -> ByteArray(32 - unsigned.size) { 0 } + unsigned
+            else -> unsigned.copyOfRange(unsigned.size - 32, unsigned.size)
+        }
     }
 
     private fun sha256(data: ByteArray): ByteArray {

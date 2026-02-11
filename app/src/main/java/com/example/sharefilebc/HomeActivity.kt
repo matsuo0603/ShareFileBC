@@ -496,6 +496,51 @@ class HomeActivity : ComponentActivity() {
             )
         }
 
+        // ✅ nameMeta があれば「ファイル名だけ」先に復号して received_files.fileName に保存する。
+        // これにより、受信一覧で securePackage.vpfs のままにならず、image.png 等の本来の名前を表示できる。
+        // ※ 本文はダウンロード時に復号する。
+        runCatching {
+            val nameMeta = params.nameMeta?.trim().orEmpty()
+            if (nameMeta.isBlank()) return@runCatching
+
+            val kd = KeyDerivation.getInstance(context)
+            // iOS(Swift) と同じ派生パスで復号する
+            val recipientPriv = kd.getCurrentPrivateKeyHex("m/44'/0'/0'/0/0")
+
+            val plainName = com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
+                nameMetaBase64Url = nameMeta,
+                recipientPrivateKeyHex = recipientPriv,
+                signerPublicKeyHex = senderKey
+            )
+
+            withContext(Dispatchers.IO) {
+                val dao = db.receivedFileDao()
+                val row = dao.findByShareId(uuid) ?: return@withContext
+                dao.insert(
+                    row.copy(
+                        fileName = plainName,
+                        nameMetadataError = null
+                    )
+                )
+            }
+
+            Log.d(DL_TAG, "[bootstrap] ✅ nameMeta decrypt ok -> fileName=$plainName")
+        }.onFailure { e ->
+            // 次回の切り分け用に reason を DB に残す
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val dao = db.receivedFileDao()
+                    val row = dao.findByShareId(uuid) ?: return@withContext
+                    dao.insert(
+                        row.copy(
+                            nameMetadataError = "nameMeta decrypt failed: ${e.message}"
+                        )
+                    )
+                }
+            }
+            Log.w(DL_TAG, "[bootstrap] ⚠️ nameMeta decrypt failed: ${e.message}")
+        }
+
         // ✅ iOS→Android の「単体ファイル共有」では sharedWithMe フォルダが存在せず、
         // received_folders が空のままだと DownloadScreen に何も出ない。
         // そのため、deep link で fileId が来たタイミングで「擬似フォルダ（file:<fileId>）」を

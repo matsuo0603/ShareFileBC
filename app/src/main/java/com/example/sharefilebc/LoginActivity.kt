@@ -31,6 +31,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Task
 import com.google.api.services.drive.DriveScopes
+import com.google.api.services.gmail.GmailScopes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -57,7 +58,10 @@ class LoginActivity : ComponentActivity() {
 
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope(DriveScopes.DRIVE))
+            .requestScopes(
+                Scope(DriveScopes.DRIVE),
+                Scope(GmailScopes.GMAIL_SEND)
+            )
             .build()
         googleSignInClient = GoogleSignIn.getClient(this, gso)
 
@@ -79,8 +83,14 @@ class LoginActivity : ComponentActivity() {
 
         // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         val already = GoogleSignIn.getLastSignedInAccount(this)
-        val hasDrive = already?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
-        if (deepLinkUriFromHomeActivity != null && (already == null || !hasDrive)) {
+        val hasRequiredScopes = already?.let {
+            GoogleSignIn.hasPermissions(
+                it,
+                Scope(DriveScopes.DRIVE),
+                Scope(GmailScopes.GMAIL_SEND)
+            )
+        } ?: false
+        if (deepLinkUriFromHomeActivity != null && (already == null || !hasRequiredScopes)) {
             launcher.launch(googleSignInClient.signInIntent)
         }
 
@@ -134,11 +144,17 @@ class LoginActivity : ComponentActivity() {
             val account = task.getResult(Exception::class.java)
             val displayName = account?.displayName ?: "ログインユーザー"
 
-            val hasDrive = account?.let { GoogleSignIn.hasPermissions(it, Scope(DriveScopes.DRIVE)) } ?: false
-            Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=$hasDrive")
+            val hasRequiredScopes = account?.let {
+                GoogleSignIn.hasPermissions(
+                    it,
+                    Scope(DriveScopes.DRIVE),
+                    Scope(GmailScopes.GMAIL_SEND)
+                )
+            } ?: false
+            Log.d(TAG, "✅ SignIn ok: ${account?.email} scopesReady=$hasRequiredScopes")
 
-            if (account == null || !hasDrive) {
-                Toast.makeText(this, "Drive権限が不足しています", Toast.LENGTH_LONG).show()
+            if (account == null || !hasRequiredScopes) {
+                Toast.makeText(this, "Drive/Gmail権限が不足しています（再ログインしてください）", Toast.LENGTH_LONG).show()
                 return
             }
 

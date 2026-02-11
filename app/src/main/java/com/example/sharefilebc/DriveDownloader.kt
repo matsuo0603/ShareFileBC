@@ -53,7 +53,10 @@ class DriveDownloader(private val context: Context) {
      * - 送信側: 自分の /0 秘密鍵で署名（ECDSA）
      * - 受信側: 送信者の /0 公開鍵で署名検証（ECDSA）
      */
-    private val RECIPIENT_PRIVATE_KEY_PATH = "m/44'/0'/0'/0/1"
+    // ✅ iOS(Swift) の BIP32 派生鍵 (Constants.Strings.bip32Path) と合わせる
+    // Swift 側では xprv から m/44'/0'/0'/0/0 を導出して ECIES 復号に使っている。
+    // ここがズレると ECIES で復号した AESKey が不一致となり、AES-GCM のタグ不一致(AEADBadTagException) になる。
+    private val RECIPIENT_PRIVATE_KEY_PATH = "m/44'/0'/0'/0/0"
 
     private fun isVpfsLikeFileName(name: String): Boolean {
         // .tmp も許容（temp保存してるため）
@@ -418,16 +421,19 @@ class DriveDownloader(private val context: Context) {
             val recipientPrivateKeyHex = wallet.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
             val recipientPublicKeyHex = wallet.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
 
-            // ✅ 重要：自分の /1 公開鍵を「全文」でログ出し
-            val myDerivedPub = wallet.getCurrentPublicKeyHex("m/44'/0'/0'/0/1")
-            Log.d("DriveDownloader", "🔑 my /1 publicKey(full)=$myDerivedPub")
-            Log.d("DriveDownloader", "🔑 my /1 publicKey(len)=${myDerivedPub.length}")
+            // ✅ 重要：自分の受信用公開鍵を「全文」でログ出し（鍵ズレ検出用）
+            val myDerivedPub = wallet.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
+            Log.d("DriveDownloader", "🔑 my recipient publicKey(path=$RECIPIENT_PRIVATE_KEY_PATH, full)=$myDerivedPub")
+            Log.d("DriveDownloader", "🔑 my recipient publicKey(len)=${myDerivedPub.length}")
 
             Log.d("DriveDownloader", "🔐 recipientPublicKeyHex(full)=$recipientPublicKeyHex")
             Log.d("DriveDownloader", "🔐 recipientPublicKeyHex(len)=${recipientPublicKeyHex.length}")
-            Log.d("DriveDownloader", "🔎 /1 keys equal? ${myDerivedPub.equals(recipientPublicKeyHex, ignoreCase = true)}")
+            Log.d(
+                "DriveDownloader",
+                "🔎 keys equal? path=$RECIPIENT_PRIVATE_KEY_PATH -> ${myDerivedPub.equals(recipientPublicKeyHex, ignoreCase = true)}"
+            )
 
-            Log.d("DriveDownloader", "🔐 受信者公開鍵(/1): ${recipientPublicKeyHex.take(16)}...")
+            Log.d("DriveDownloader", "🔐 受信者公開鍵(path=$RECIPIENT_PRIVATE_KEY_PATH): ${recipientPublicKeyHex.take(16)}...")
             Log.d("DriveDownloader", "✍️  送信者署名用公開鍵(/0): ${signerPublicKeyHex.take(16)}...")
             Log.d("DriveDownloader", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 

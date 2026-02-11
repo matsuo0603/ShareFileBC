@@ -546,6 +546,19 @@ fun HomeScreen(
                                         folderId = folderId
                                     )
 
+                                    // 切り分け用ログ：iOSに送った公開鍵リンクの中身
+                                    runCatching {
+                                        val kd = KeyDerivation.getInstance(context)
+                                        val myPub = kd.getCurrentPublicKeyHex()
+                                        val km = KeyManager.getInstance(context)
+                                        Log.d(
+                                            "PUBKEY_DEBUG",
+                                            "[sendPubKeyLink:onShare] to=${user.email} emailParam=${accountEmail ?: user.email} " +
+                                                    "derivedPublicKey=$derivedPublicKey trustLayerPublicKey=$trustLayerPublicKey folderId=$folderId " +
+                                                    "myDerivedPub(m/44'/0'/0'/0/0)=$myPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$registrationUrl"
+                                        )
+                                    }
+
                                     Toast.makeText(
                                         context,
                                         "相手の公開鍵がまだ登録されていません",
@@ -706,6 +719,19 @@ fun HomeScreen(
                                     showAddDialog = false
                                     snackbarHostState.showSnackbar("登録が完了しました")
                                     if (url != null) {
+                                        // 切り分け用ログ：新規登録時に送る公開鍵リンクの中身
+                                        runCatching {
+                                            val parsed = PublicKeyLinkBuilder.parse(android.net.Uri.parse(url))
+                                            val kd = KeyDerivation.getInstance(context)
+                                            val myPub = kd.getCurrentPublicKeyHex()
+                                            val km = KeyManager.getInstance(context)
+                                            Log.d(
+                                                "PUBKEY_DEBUG",
+                                                "[sendPubKeyLink:onRegister] to=${email} emailParam=${accountEmail ?: email} " +
+                                                        "derivedPublicKey=${parsed?.derivedPublicKey} trustLayerPublicKey=${parsed?.trustLayerPublicKey} folderId=${parsed?.folderId} " +
+                                                        "myDerivedPub(m/44'/0'/0'/0/0)=$myPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$url"
+                                            )
+                                        }
                                         EmailSender.sendPublicKeyRegistrationEmail(
                                             context = context,
                                             recipientEmail = email,
@@ -1105,12 +1131,19 @@ private suspend fun resolveMyKeys(
 
     val walletManager = WalletManager.getInstance(context)
     walletManager.initializeIfNeeded()
-    // ↑ ここで my_public_keys が必ず作られる前提
+    // ✅ 念のため、ここで必ずmy_public_keysを復旧/更新してから読み取る
+    walletManager.ensureMyPublicKeysPersisted()
 
     val existing = myPublicKeyDao.getPrimary()
-        ?: throw IllegalStateException(
-            "MyPublicKeyEntity is missing even after wallet initialization"
-        )
+        ?: run {
+            // それでも無い場合は、固定パスから直接導出して保存してから返す
+            val kd = KeyDerivation.getInstance(context)
+            val trust = kd.getCurrentPublicKeyHex(KeyDerivation.TRUST_LAYER_PATH)
+            val derived = kd.getCurrentPublicKeyHex(KeyDerivation.DERIVED_KEY_PATH)
+            myPublicKeyDao.upsert(MyPublicKeyEntity(id = 1, trustLayerPublicKey = trust, derivedPublicKey = derived))
+            android.util.Log.w("HomeScreen", "⚠️ my_public_keys missing -> recovered by KeyDerivation (trust=${trust.take(16)}... derived=${derived.take(16)}...)")
+            myPublicKeyDao.getPrimary() ?: throw IllegalStateException("MyPublicKeyEntity still missing after recovery")
+        }
 
     val trustLayer = existing.trustLayerPublicKey
         ?: throw IllegalStateException("trustLayerPublicKey is null")

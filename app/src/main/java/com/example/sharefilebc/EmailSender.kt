@@ -172,6 +172,22 @@ object EmailSender {
         registrationUrl: String,
         senderEmail: String? = null
     ) {
+        // 切り分け用ログ：この端末が iOS 側に渡す「公開鍵登録リンク」の中身
+        runCatching {
+            val parsed = PublicKeyLinkBuilder.parse(Uri.parse(registrationUrl))
+            val kd = KeyDerivation.getInstance(context)
+            val myDerivedPub = kd.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+            val km = KeyManager.getInstance(context)
+            Log.d(
+                TAG,
+                "[PUBKEY_DEBUG] sendPublicKeyRegistrationEmail to=$recipientEmail " +
+                        "emailParam=${parsed?.email} derived=${parsed?.derivedPublicKey} trust=${parsed?.trustLayerPublicKey} folderId=${parsed?.folderId} " +
+                        "myDerivedPub(m/44'/0'/0'/0/0)=$myDerivedPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$registrationUrl"
+            )
+        }.onFailure {
+            Log.w(TAG, "[PUBKEY_DEBUG] parse failed url=$registrationUrl")
+        }
+
         val subject = "公開鍵登録のお願い"
         val body = buildString {
             appendLine("以下のリンクをタップして公開鍵を登録してください。")
@@ -221,17 +237,25 @@ object EmailSender {
     ) {
         val activity = context as? Activity
         if (activity == null) {
-            Log.e("EmailSender", "❌ Activity コンテキストでないため Gmail 送信を開始できません")
+            Log.e(TAG, "❌ Activity コンテキストでないため Gmail 送信を開始できません (to=$recipientEmail)")
             return
         }
 
+        val account = GoogleSignIn.getLastSignedInAccount(activity)
+        Log.d(
+            TAG,
+            "📧 sendEmail requested: to=$recipientEmail subjectLen=${subject.length} bodyLen=${body.length} " +
+                    "account=${account?.email} hasGmailSend=${hasGmailSendScope(activity)}"
+        )
+
         if (hasGmailSendScope(activity)) {
             performSendGmailAsync(activity, recipientEmail, subject, body) { ok ->
-                Log.d("EmailSender", if (ok) "📧 Gmail API 送信成功" else "❌ Gmail API 送信失敗")
+                Log.d(TAG, if (ok) "📧 Gmail API 送信成功" else "❌ Gmail API 送信失敗")
             }
         } else {
             // 権限同意待ちのメールとして退避
             pendingEmail = PendingEmail(recipientEmail, subject, body)
+            Log.w(TAG, "⚠️ Gmail送信スコープが未同意のため、メールを保留しました。スコープ同意画面を表示します。")
             requestGmailSendScope(activity)
         }
     }
@@ -241,16 +265,19 @@ object EmailSender {
      * Gmail 送信スコープに同意したあと保留メールを送信する。
      */
     fun onActivityResultBridge(context: Context, requestCode: Int, resultCode: Int) {
-        if (requestCode != RC_GMAIL_SEND_SCOPE || resultCode != Activity.RESULT_OK) return
+        Log.d(TAG, "onActivityResultBridge: requestCode=$requestCode resultCode=$resultCode")
+        if (requestCode != RC_GMAIL_SEND_SCOPE || resultCode != Activity.RESULT_OK) {
+            if (requestCode == RC_GMAIL_SEND_SCOPE) {
+                Log.w(TAG, "⚠️ Gmail送信スコープ同意がキャンセル/失敗しました")
+            }
+            return
+        }
 
         val mail = pendingEmail ?: return
         pendingEmail = null
 
         performSendGmailAsync(context, mail.to, mail.subject, mail.body) { ok ->
-            Log.d(
-                "EmailSender",
-                if (ok) "📧 同意後に Gmail 送信成功" else "❌ 同意後に Gmail 送信失敗"
-            )
+            Log.d(TAG, if (ok) "📧 同意後に Gmail 送信成功" else "❌ 同意後に Gmail 送信失敗")
         }
     }
 
@@ -265,6 +292,7 @@ object EmailSender {
         ioScope.launch {
             val service = getGmailService(context)
             if (service == null) {
+                Log.e(TAG, "❌ Gmail service is null (not signed in or missing scope?)")
                 withContext(Dispatchers.Main) { callback(false) }
                 return@launch
             }
@@ -300,11 +328,13 @@ object EmailSender {
                 setRaw(base64url)
             }
 
+            Log.d(TAG, "📧 Gmail send start: to=$to rawBytes=${raw.toByteArray(StandardCharsets.UTF_8).size}")
+
             val ok = runCatching {
                 service.users().messages().send("me", message).execute()
                 true
             }.getOrElse { e ->
-                Log.e("EmailSender", "❌ Gmail send failed", e)
+                Log.e(TAG, "❌ Gmail send failed", e)
                 false
             }
 
@@ -317,7 +347,12 @@ object EmailSender {
     // ----------------------------------------------------
 
     private fun getGmailService(context: Context): Gmail? {
-        val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
+        val account = GoogleSignIn.getLastSignedInAccount(context)
+        if (account == null) {
+            Log.e(TAG, "❌ getGmailService: lastSignedInAccount is null")
+            return null
+        }
+        Log.d(TAG, "getGmailService: account=${account.email}")
         val credential = GoogleAccountCredential.usingOAuth2(
             context, listOf(GmailScopes.GMAIL_SEND)
         ).apply {
@@ -332,13 +367,24 @@ object EmailSender {
     }
 
     private fun hasGmailSendScope(activity: Activity): Boolean {
-        val account = GoogleSignIn.getLastSignedInAccount(activity) ?: return false
+        val account = GoogleSignIn.getLastSignedInAccount(activity)
+        if (account == null) {
+            Log.w(TAG, "hasGmailSendScope: account is null")
+            return false
+        }
         val scope = Scope(GmailScopes.GMAIL_SEND)
-        return GoogleSignIn.hasPermissions(account, scope)
+        val ok = GoogleSignIn.hasPermissions(account, scope)
+        Log.d(TAG, "hasGmailSendScope: ${account.email} -> $ok")
+        return ok
     }
 
     private fun requestGmailSendScope(activity: Activity) {
-        val account = GoogleSignIn.getLastSignedInAccount(activity) ?: return
+        val account = GoogleSignIn.getLastSignedInAccount(activity)
+        if (account == null) {
+            Log.e(TAG, "❌ requestGmailSendScope: account is null")
+            return
+        }
+        Log.d(TAG, "requestGmailSendScope: account=${account.email}")
         val scope = Scope(GmailScopes.GMAIL_SEND)
         GoogleSignIn.requestPermissions(activity, RC_GMAIL_SEND_SCOPE, account, scope)
     }

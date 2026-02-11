@@ -29,6 +29,9 @@ class WalletManager private constructor(
     private val initMutex = Mutex()
     private val syncMutex = Mutex()
 
+    // ✅ master key は KeyManager に一本化（暗号/署名/公開鍵導出のズレを防ぐ）
+    private val keyManager: KeyManager = KeyManager.getInstance(context)
+
     companion object {
         @Volatile
         @SuppressLint("StaticFieldLeak") // applicationContext を保持するためlint抑制
@@ -87,14 +90,9 @@ class WalletManager private constructor(
         val settings = WalletSettingsManager.getInstance(context)
         val networkConfig = settings.getNetworkConfig()
 
-        var masterKey = loadMasterKeyFromPrefs()
-        if (masterKey == null) {
-            masterKey = generateMasterKey(networkConfig.networkMode)
-            saveMasterKeyToPrefs(masterKey)
-            Log.d(tag, "🆕 New master key generated")
-        } else {
-            Log.d(tag, "🔑 Existing master key loaded")
-        }
+        // ✅ KeyManager に一本化
+        val masterKey = keyManager.getOrCreateMasterXprv(networkConfig.networkMode)
+        Log.d(tag, "🔑 Master key ready (fp=${keyManager.getMasterXprvFingerprintOrNull()})")
 
         val dbPath = context.getDatabasePath("tapyrus_wallet.db").absolutePath
         val config = Config(
@@ -260,33 +258,42 @@ class WalletManager private constructor(
         wallet = null
     }
 
-    private fun loadMasterKeyFromPrefs(): String? {
-        val prefs = context.getSharedPreferences("wallet_prefs", Context.MODE_PRIVATE)
-        return prefs.getString("master_key", null)
-    }
+    // 旧: wallet_prefs/master_key は廃止（KeyManager に一本化）
 
-    private fun saveMasterKeyToPrefs(masterKey: String) {
-        val prefs = context.getSharedPreferences("wallet_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("master_key", masterKey).apply()
-    }
-
+    /**
+     * ✅ my_public_keys を「固定パスの公開鍵」で必ず埋める。
+     * - 以前の実装は getNewAddressWithPublicKey() を2回呼んでおり、起動のたびに値が揺れる/一致しない可能性があった
+     * - Swift版同様に、master key から決め打ちパスで導出した公開鍵を保存する
+     */
     private suspend fun ensureMyPublicKeyExists() = withContext(Dispatchers.IO) {
         val db = AppDatabase.getDatabase(context)
         val dao = db.myPublicKeyDao()
 
-        val existing = dao.getPrimary()
-        if (existing == null) {
-            val (_, trustLayerPublicKey) = getNewAddressWithPublicKey(colorId = null)
-            val (_, derivedPublicKey) = getNewAddressWithPublicKey(colorId = null)
+        val kd = com.example.sharefilebc.KeyDerivation.getInstance(context)
+        val trustLayerPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.TRUST_LAYER_PATH)
+        val derivedPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.DERIVED_KEY_PATH)
 
+        val existing = dao.getPrimary()
+        val needsUpsert = existing == null || existing.trustLayerPublicKey.isNullOrBlank() || existing.derivedPublicKey.isNullOrBlank()
+        if (needsUpsert) {
             val entity = MyPublicKeyEntity(
                 id = 1,
                 trustLayerPublicKey = trustLayerPublicKey,
                 derivedPublicKey = derivedPublicKey
             )
-
             dao.upsert(entity)
-            Log.d(tag, "🔑 My public keys saved")
+            Log.d(tag, "🔑 My public keys saved/updated (trust=${trustLayerPublicKey.take(16)}... derived=${derivedPublicKey.take(16)}... fp=${keyManager.getMasterXprvFingerprintOrNull()})")
+        } else {
+            Log.d(tag, "🔑 My public keys already exist (trust=${existing!!.trustLayerPublicKey!!.take(16)}... derived=${existing.derivedPublicKey!!.take(16)}...)")
         }
+    }
+
+    /**
+     * HomeScreen などから明示的に呼ぶ用。
+     * "MyPublicKeyEntity missing" が出たときに即復旧できる。
+     */
+    suspend fun ensureMyPublicKeysPersisted() {
+        initializeIfNeeded()
+        ensureMyPublicKeyExists()
     }
 }

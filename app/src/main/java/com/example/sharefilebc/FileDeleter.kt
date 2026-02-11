@@ -5,12 +5,17 @@ import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.DriveServiceHelper
 import com.example.sharefilebc.data.ReceivedFolderDao
-import kotlinx.coroutines.runBlocking
 import java.text.SimpleDateFormat
 import java.util.*
 
 object FileDeleter {
-    fun deleteExpiredFiles(context: Context) = runBlocking {
+    /**
+     * 期限切れデータの削除処理。
+     *
+     * ❗️重要: UIスレッドで runBlocking すると ANR の原因になる。
+     * 呼び出し側（WorkManager / lifecycleScope(IO)）で suspend として呼ぶ。
+     */
+    suspend fun deleteExpiredFiles(context: Context) {
         Log.d("FileDeleter", "🧹 削除処理開始")
 
         val db = AppDatabase.getDatabase(context)
@@ -44,7 +49,6 @@ object FileDeleter {
         val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"))
         calendar.time = uploadDate
         calendar.add(Calendar.DAY_OF_YEAR, 7) // 7日後に削除
-
         return calendar.time
     }
 
@@ -85,7 +89,10 @@ object FileDeleter {
         }
     }
 
-    private suspend fun deleteExpiredSharedFiles(context: Context, dao: com.example.sharefilebc.data.SharedFolderDao) {
+    private suspend fun deleteExpiredSharedFiles(
+        context: Context,
+        dao: com.example.sharefilebc.data.SharedFolderDao
+    ) {
         val allSharedFiles = dao.getAllOnce()
         val currentJSTTime = getCurrentJSTTime()
 
@@ -116,7 +123,10 @@ object FileDeleter {
 
             expired.forEach { entry ->
                 try {
-                    Log.d("FileDeleter", "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}")
+                    Log.d(
+                        "FileDeleter",
+                        "📄 共有ファイル削除対象: ${entry.fileName} (${entry.fileGoogleDriveId}) - アップロード日時: ${entry.date}"
+                    )
                     driveService.files().delete(entry.fileGoogleDriveId).execute()
                     dao.deleteById(entry.id)
                     Log.d("FileDeleter", "✅ 共有ファイル削除成功: ${entry.fileGoogleDriveId}")

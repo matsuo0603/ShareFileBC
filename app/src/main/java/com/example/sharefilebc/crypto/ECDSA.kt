@@ -28,13 +28,13 @@ object ECDSA {
         val privBytes = privateKeyHex.hexToByteArray()
         val privateKey = createECPrivateKey(privBytes)
 
-        // まず message を SHA-256
-        val hash = sha256(message)
-
         val provider = BouncyCastleInitializer.ensure()
         val sig = Signature.getInstance("SHA256withECDSA", provider)
         sig.initSign(privateKey)
-        sig.update(hash)
+        // iOS(P256K) 実装は「message をそのまま渡し、内部で SHA-256 を行う」前提。
+        // ここで事前に sha256(message) してしまうと "SHA256(SHA256(message))" になり
+        // iOS と不一致になって署名検証が必ず失敗する。
+        sig.update(message)
         return sig.sign()  // DER 形式
     }
 
@@ -45,13 +45,26 @@ object ECDSA {
         val pubBytes = publicKeyHex.hexToByteArray()
         val publicKey = createECPublicKey(pubBytes)
 
-        val hash = sha256(message)
-
         val provider = BouncyCastleInitializer.ensure()
         val sig = Signature.getInstance("SHA256withECDSA", provider)
         sig.initVerify(publicKey)
-        sig.update(hash)
-        return sig.verify(signature)
+
+        // iOS と同じく「message をそのまま渡す（内部で SHA-256）」
+        sig.update(message)
+        val ok = sig.verify(signature)
+
+        // 互換性のため、過去に二重ハッシュで署名してしまったデータが存在する可能性もある。
+        // その場合だけフォールバック検証を試す（ログ解析用）。
+        if (!ok) {
+            return runCatching {
+                val hash = sha256(message)
+                val sig2 = Signature.getInstance("SHA256withECDSA", provider)
+                sig2.initVerify(publicKey)
+                sig2.update(hash)
+                sig2.verify(signature)
+            }.getOrDefault(false)
+        }
+        return true
     }
 
     // ===== 内部ユーティリティ =====
