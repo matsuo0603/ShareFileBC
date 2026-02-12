@@ -91,6 +91,27 @@ class DriveUploader(private val context: Context) {
 
                 val wallet = KeyDerivation.getInstance(context)
 
+                // --- KEY SNAPSHOT (切り分け用) ---
+                // 仕様:
+                // - derivedKey(/1): ECIES(暗号化) 用
+                // - trustLayerKey(/0): 署名(ECDSA) 用
+                val PATH_DERIVED = KeyDerivation.DERIVED_KEY_PATH
+                val PATH_TRUST = KeyDerivation.TRUST_LAYER_PATH
+
+                val myPubDerived = wallet.getCurrentPublicKeyHex(PATH_DERIVED)
+                val myPrivDerived = wallet.getCurrentPrivateKeyHex(PATH_DERIVED)
+                val myPubTrust = wallet.getCurrentPublicKeyHex(PATH_TRUST)
+                val myPrivTrust = wallet.getCurrentPrivateKeyHex(PATH_TRUST)
+                CryptoTrace.logMyKeySnapshot(
+                    event = "DriveUploader.uploadFileAndRecordWithSharing:beforeEncrypt",
+                    path0 = PATH_TRUST,
+                    pub0 = myPubTrust,
+                    priv0Hex = myPrivTrust,
+                    path1 = PATH_DERIVED,
+                    pub1 = myPubDerived,
+                    priv1Hex = myPrivDerived
+                )
+
                 // ✅ 重要：送信直前にDBから相手鍵を取り直す（Swift版寄せ）
                 val emailKeyDao = db.emailKeyDao()
                 val latestFromDb = runCatching { emailKeyDao.findByEmail(recipient.email) }.getOrNull()
@@ -125,8 +146,23 @@ class DriveUploader(private val context: Context) {
                 Log.d("DriveUploader", "🔐 encrypt recipientPublicKeyHex(len)=${recipientPublicKeyHex.length}")
                 Log.d("DriveUploader", "📧 recipient=${recipient.email} name=${recipient.name}")
 
-                val signingPrivateKeyHex = wallet.getCurrentPrivateKeyHex()
-                val signerPublicKeyHex = wallet.getCurrentPublicKeyHex()
+                // ✅ 役割整合性ログ（推測ではなく、実際に使った値を確定させる）
+                // - ECIES(暗号化) に使った相手鍵: recipientPublicKeyHex
+                // - 署名に使う自分の鍵: trustLayerKey(/0)
+                // - メールURLの sender= に入れる鍵: signerPublicKeyHex
+                CryptoTrace.logSendKeyRoles(
+                    event = "DriveUploader.encrypt",
+                    recipientEmail = recipient.email,
+                    recipientDerivedKey = effectiveKey.derivedPublicKey,
+                    recipientTrustLayerKey = effectiveKey.trustLayerPublicKey,
+                    recipientPubKeyUsedForECIES = recipientPublicKeyHex,
+                    signerPath = PATH_TRUST,
+                    signerPubKeyUsed = myPubTrust,
+                    senderParamInserted = myPubTrust
+                )
+
+                val signingPrivateKeyHex = myPrivTrust
+                val signerPublicKeyHex = myPubTrust
 
                 // Swift版互換: nameMeta(Base64(JSON)) も同時に生成してメールURLに付与する
                 val secure = SecurePackage.createWithNameMeta(

@@ -56,7 +56,8 @@ class DriveDownloader(private val context: Context) {
     // ✅ iOS(Swift) の BIP32 派生鍵 (Constants.Strings.bip32Path) と合わせる
     // Swift 側では xprv から m/44'/0'/0'/0/0 を導出して ECIES 復号に使っている。
     // ここがズレると ECIES で復号した AESKey が不一致となり、AES-GCM のタグ不一致(AEADBadTagException) になる。
-    private val RECIPIENT_PRIVATE_KEY_PATH = "m/44'/0'/0'/0/0"
+    // ✅ 受信(復号)に使うのは derivedKey(/1)
+    private val RECIPIENT_PRIVATE_KEY_PATH = KeyDerivation.DERIVED_KEY_PATH
 
     /**
      * Drive上の実ファイル名は securePackage.vpfs のままなので、
@@ -91,6 +92,15 @@ class DriveDownloader(private val context: Context) {
         return runCatching {
             val kd = KeyDerivation.getInstance(context)
             val recipientPriv = kd.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
+            val recipientPub = kd.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
+            CryptoTrace.logReceiveKeyRoles(
+                event = "DriveDownloader.resolveDisplayFileName:nameMeta",
+                senderParam = signerPub,
+                signerPubKeyUsedForVerify = signerPub,
+                recipientPathUsedForDecrypt = RECIPIENT_PRIVATE_KEY_PATH,
+                recipientPrivKeyHexUsed = recipientPriv,
+                recipientPubDerivedFromPriv = recipientPub
+            )
 
             val plainName = SecurePackage.decryptFileNameFromNameMeta(
                 nameMetaBase64Url = nameMeta,
@@ -184,8 +194,6 @@ class DriveDownloader(private val context: Context) {
                 val driveService = getDriveService() ?: return@withContext null
 
                 // ✅ 擬似フォルダID（file:<fileId>）対応：
-                // IncomingFilesSyncer が file:<fileId> を received_folders に入れることで、
-                // UI(DownloadScreen) を変えずに「単体ファイル共有」を一覧に表示できる。
                 if (folderId.startsWith("file:")) {
                     val fileId = folderId.removePrefix("file:").trim()
                     if (fileId.isBlank()) return@withContext null
@@ -194,7 +202,6 @@ class DriveDownloader(private val context: Context) {
                         .setFields("id, name, mimeType, createdTime, owners(displayName, emailAddress)")
                         .execute()
 
-                    // ✅ 受信一覧では Room に保存した復号済みファイル名を優先して表示する
                     val displayName = resolveDisplayFileName(fileId = file.id, driveName = file.name)
 
                     val jst = TimeZone.getTimeZone("Asia/Tokyo")
@@ -279,7 +286,6 @@ class DriveDownloader(private val context: Context) {
                     val ownerDisplayName = owner?.displayName?.takeIf(String::isNotBlank)
                     val ownerEmail = owner?.emailAddress?.takeIf(String::isNotBlank)
 
-                    // ✅ ここでも「復号済みファイル名」を優先
                     val displayName = if (isFolder) {
                         file.name
                     } else {
@@ -305,7 +311,6 @@ class DriveDownloader(private val context: Context) {
                 )
             } catch (e: Exception) {
 
-                // ✅ 404(File not found) は Room に残った folderId が無効化している可能性が高いので掃除する
                 if (e is GoogleJsonResponseException && e.statusCode == 404) {
                     Log.w("DriveDownloader", "⚠️ Folder not found (404). Removing from Room. folderId=$folderId")
                     runCatching {
@@ -330,22 +335,13 @@ class DriveDownloader(private val context: Context) {
         }
     }
 
-    /**
-     * ✅ 修正ポイント：
-     * 1) Downloads直書きせず、まず app 専用領域（外部アプリ領域 or 内部）へ保存
-     * 2) 復号も同じ一時領域で実行
-     * 3) 最後に MediaStore 経由で Downloads にコピー（Android10+対応）
-     */
     suspend fun downloadFile(fileId: String): java.io.File? {
         return withContext(Dispatchers.IO) {
             try {
                 val driveService = getDriveService() ?: return@withContext null
 
-                // 送信者（ownerEmail）を取っておく（復号時の署名検証に必要）
                 val fileCtx = resolveFileContext(fileId)
 
-                // ✅ /file/<fileId> deep link では ownerEmail が取れないことがあるため、
-                // Room(received_files) に保存済みの senderPublicKey（署名検証用 /0）も拾う
                 val receivedSenderPubKey: String? = runCatching {
                     val db = AppDatabase.getDatabase(context.applicationContext)
                     db.receivedFileDao().findByFileId(fileId)?.senderPublicKey
@@ -354,7 +350,6 @@ class DriveDownloader(private val context: Context) {
                 val fileMetadata = driveService.files().get(fileId).execute()
                 val originalName = fileMetadata.name ?: "downloaded.vpfs"
 
-                // ✅ 一時保存先（EACCES回避）
                 val tempDir: File = context.getExternalFilesDir(null) ?: context.filesDir
                 val tempFile = File(tempDir, "$originalName.tmp")
 
@@ -367,14 +362,12 @@ class DriveDownloader(private val context: Context) {
 
                 Log.d("DriveDownloader", "✅ ダウンロード完了: ${tempFile.length()} bytes")
 
-                // 復号処理（tempDir内で完結）
                 val decryptedFile = tryDecryptPackageIfNeeded(
                     downloadedFile = tempFile,
                     senderEmail = fileCtx?.ownerEmail,
                     senderPublicKeyHex = receivedSenderPubKey
                 )
 
-                // ✅ 復号に失敗して .vpfs のままなら Downloads へ保存しない
                 if (decryptedFile == tempFile && isVpfsLikeFileName(tempFile.name)) {
                     if (tempFile.exists()) tempFile.delete()
                     withContext(Dispatchers.Main) {
@@ -387,10 +380,8 @@ class DriveDownloader(private val context: Context) {
                     return@withContext null
                 }
 
-                // ✅ 最終的にDownloadsへコピー（MediaStore）
                 val finalFile = copyToDownloads(decryptedFile)
 
-                // 一時ファイル削除
                 if (tempFile.exists()) tempFile.delete()
                 if (decryptedFile != tempFile && decryptedFile.exists()) decryptedFile.delete()
 
@@ -418,46 +409,46 @@ class DriveDownloader(private val context: Context) {
     }
 
     /**
-     * 送信者の公開鍵（署名検証用）をDBから取得する。
+     * 署名検証に使う送信者公開鍵を「候補」として集める。
      *
-     * 署名は /0 で行われているため、trustLayerPublicKey（/0）を使用する。
+     * iOS 側で sender パラメータが誤って別の公開鍵（例: アドレス生成で得た可変鍵）になった場合でも、
+     * 送信者Emailに紐づく trustLayerPublicKey(/0) で署名検証できる可能性がある。
      *
-     * 優先順位：
-     *  1) deep link / Room(received_files).senderPublicKey（署名用：/0）
-     *  2) EmailKeyEntity.trustLayerPublicKey（署名用：/0）
-     *  3) UserEntity.publicKeyHex（フォールバック）
+     * 戻り値は "pk1,pk2,..." のカンマ区切り。
+     * SecurePackage 側が候補を順に verify し、通った鍵を採用する。
      */
     private suspend fun resolveSignerPublicKeyHex(senderEmail: String?, senderPublicKeyHex: String?): String? {
-        // ✅ deep link(/file/<id>) では senderEmail が null になりがち。
-        // その場合でも URL の sender=（/0 公開鍵）や Room(received_files) の senderPublicKey を優先して使う。
+        val candidates = mutableListOf<String>()
+
         val direct = senderPublicKeyHex?.trim()?.takeIf { it.isNotBlank() }
         if (direct != null) {
-            Log.d("DriveDownloader", "🔑 送信者署名用公開鍵（direct /0）: ${direct.take(16)}...")
-            return direct
+            Log.d("DriveDownloader", "🔑 送信者署名用公開鍵候補(direct): ${direct.take(16)}...")
+            candidates.add(direct)
         }
 
-        if (senderEmail.isNullOrBlank()) return null
+        if (!senderEmail.isNullOrBlank()) {
+            try {
+                val db = AppDatabase.getDatabase(context.applicationContext)
 
-        return try {
-            val db = AppDatabase.getDatabase(context.applicationContext)
+                val emailKey = db.emailKeyDao().findByEmail(senderEmail)
+                val fromEmailKey = emailKey?.trustLayerPublicKey?.trim()?.takeIf { it.isNotBlank() }
+                if (fromEmailKey != null && !candidates.contains(fromEmailKey)) {
+                    Log.d("DriveDownloader", "🔑 送信者署名用公開鍵候補(emailKey /0): ${fromEmailKey.take(16)}...")
+                    candidates.add(fromEmailKey)
+                }
 
-            val emailKey = db.emailKeyDao().findByEmail(senderEmail)
-            val fromEmailKey = emailKey?.trustLayerPublicKey?.takeIf { it.isNotBlank() }
-            if (fromEmailKey != null) {
-                Log.d("DriveDownloader", "🔑 送信者署名用公開鍵（/0）: ${fromEmailKey.take(16)}...")
-                return fromEmailKey
+                val user = db.userDao().findByEmail(senderEmail)
+                val fromUser = user?.publicKeyHex?.trim()?.takeIf { it.isNotBlank() }
+                if (fromUser != null && !candidates.contains(fromUser)) {
+                    Log.d("DriveDownloader", "🔑 送信者署名用公開鍵候補(user): ${fromUser.take(16)}...")
+                    candidates.add(fromUser)
+                }
+            } catch (e: Exception) {
+                Log.e("DriveDownloader", "⚠ 送信者公開鍵候補の取得に失敗しました", e)
             }
-
-            val user = db.userDao().findByEmail(senderEmail)
-            val fromUser = user?.publicKeyHex?.takeIf { it.isNotBlank() }
-            if (fromUser != null) {
-                Log.d("DriveDownloader", "🔑 送信者公開鍵（User）: ${fromUser.take(16)}...")
-            }
-            fromUser
-        } catch (e: Exception) {
-            Log.e("DriveDownloader", "⚠ 送信者公開鍵の取得に失敗しました", e)
-            null
         }
+
+        return candidates.takeIf { it.isNotEmpty() }?.joinToString(",")
     }
 
     private suspend fun tryDecryptPackageIfNeeded(
@@ -465,7 +456,6 @@ class DriveDownloader(private val context: Context) {
         senderEmail: String?,
         senderPublicKeyHex: String?
     ): java.io.File {
-        // ✅ .tmp も許容（temp保存してるため）
         val name = downloadedFile.name
         val isVpfsLike = name.endsWith(".vpfs", ignoreCase = true) || name.contains(".vpfs", ignoreCase = true)
         if (!isVpfsLike) return downloadedFile
@@ -497,11 +487,9 @@ class DriveDownloader(private val context: Context) {
 
             val wallet = KeyDerivation.getInstance(context)
 
-            // 受信用秘密鍵（/1）
             val recipientPrivateKeyHex = wallet.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
             val recipientPublicKeyHex = wallet.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
 
-            // ✅ 重要：自分の受信用公開鍵を「全文」でログ出し（鍵ズレ検出用）
             val myDerivedPub = wallet.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
             Log.d("DriveDownloader", "🔑 my recipient publicKey(path=$RECIPIENT_PRIVATE_KEY_PATH, full)=$myDerivedPub")
             Log.d("DriveDownloader", "🔑 my recipient publicKey(len)=${myDerivedPub.length}")
@@ -517,13 +505,30 @@ class DriveDownloader(private val context: Context) {
             Log.d("DriveDownloader", "✍️  送信者署名用公開鍵(/0): ${signerPublicKeyHex.take(16)}...")
             Log.d("DriveDownloader", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-            val (decryptedBytes, fileName) = SecurePackage.unpack(
-                packageData = packageBytes,
+            // ✅ SecurePackage 側で「複数候補の署名公開鍵」を順に試し、通った鍵を返す。
+            val (decryptedBytes, fileName, verifiedSignerPubKeyHex) = SecurePackage.unpack(
+                vpfsBytes = packageBytes,
                 recipientPrivateKeyHex = recipientPrivateKeyHex,
                 signerPublicKeyHex = signerPublicKeyHex
             )
 
-            // ✅ 同じディレクトリ（tempDir）に復号ファイルを作成
+            // 🔎 sender パラメータが誤っていた場合にここで判定できる（iOS側の senderKey が未保存で別鍵になるケース）
+            if (!senderPublicKeyHex.isNullOrBlank() && !senderPublicKeyHex.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
+                Log.w(
+                    "DriveDownloader",
+                    "⚠ signerPublicKey mismatch: senderParam=${senderPublicKeyHex.take(16)}... verified=${verifiedSignerPubKeyHex.take(16)}..."
+                )
+            }
+
+            // sender パラメータ or DB の鍵がズレていた場合はログに残す（原因切り分け用）
+            val directSender = senderPublicKeyHex?.trim().orEmpty()
+            if (directSender.isNotBlank() && !directSender.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
+                Log.w(
+                    "DriveDownloader",
+                    "⚠ signer mismatch: senderParam=$directSender verified=$verifiedSignerPubKeyHex"
+                )
+            }
+
             val outputFile = java.io.File(downloadedFile.parentFile, fileName)
             FileOutputStream(outputFile).use { it.write(decryptedBytes) }
 

@@ -29,8 +29,8 @@ class KeyDerivation private constructor(context: Context) {
         // ✅ Swift版と同じ「固定パスで鍵を確定」する。
         // - derivedKey: 暗号化(ECIES)で相手に渡す公開鍵 / 受信側の復号で使う秘密鍵
         // - trustLayerKey: トラストレイヤ用（別用途）
-        const val DERIVED_KEY_PATH = "m/44'/0'/0'/0/0"
-        const val TRUST_LAYER_PATH = "m/44'/0'/0'/0/1"
+        const val DERIVED_KEY_PATH = "m/44'/0'/0'/0/1"
+        const val TRUST_LAYER_PATH = "m/44'/0'/0'/0/0"
 
         // 互換のための既存引数: 省略時は derivedKey を指す
         private const val DEFAULT_PATH = DERIVED_KEY_PATH
@@ -60,7 +60,7 @@ class KeyDerivation private constructor(context: Context) {
      * 現在の受取アドレスを返す。
      *
      * Swift版の `currentAddress` に対応するイメージ。
-     * 今は常に m/44'/0'/0'/0/0 のアドレス 1つだけを使う。
+     * 今は常に m/44'/0'/0'/0/1 のアドレス 1つだけを使う。
      */
     fun getCurrentAddress(): String {
         // 1. 子 xprv を取得
@@ -96,7 +96,7 @@ class KeyDerivation private constructor(context: Context) {
     }
 
     /**
-     * 現在パス (m/44'/0'/0'/0/0) の秘密鍵HEX（32byte）を返す。
+     * 現在パス (m/44'/0'/0'/0/1) の秘密鍵HEX（32byte）を返す。
      *
      * SecurePackage の署名用（ECDSA）や ECIES 復号用に使用。
      *

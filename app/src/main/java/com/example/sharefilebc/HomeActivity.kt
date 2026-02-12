@@ -6,6 +6,7 @@ import android.net.Uri
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -30,6 +31,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+import java.security.MessageDigest
 
 class HomeActivity : ComponentActivity() {
 
@@ -397,6 +400,78 @@ class HomeActivity : ComponentActivity() {
             return Uri.decode(raw)
         }
 
+        // ✅ nameMeta が URL 経由で壊れているか（'+'→' ' 等）をログだけで断定するためのチェック
+        // - raw(encodedQuery から抽出) と getQueryParameter の差分
+        // - Base64 decode の成否（DEFAULT / URL_SAFE）
+        // - getQP にスペースが混入していた場合、空白→'+' で復旧するか
+        fun debugNameMetaIntegrity() {
+            val encoded = uri.encodedQuery ?: return
+            if (!encoded.contains("nameMeta=")) return
+
+            val raw = runCatching { getRawQueryParam("nameMeta") }.getOrNull()
+            val getQP = runCatching { uri.getQueryParameter("nameMeta") }.getOrNull()
+
+            fun summarize(label: String, v: String?): String {
+                if (v == null) return "$label=null"
+                val head = v.take(24)
+                val tail = v.takeLast(24)
+                val hasSpace = v.contains(' ')
+                val hasPlus = v.contains('+')
+                val hasSlash = v.contains('/')
+                val hasDash = v.contains('-')
+                val hasUnderscore = v.contains('_')
+                return "$label(len=${v.length} head='$head' tail='$tail' space=$hasSpace plus=$hasPlus slash=$hasSlash -=$hasDash _=$hasUnderscore)"
+            }
+
+            Log.d(DL_TAG, "[nameMeta-check] uri=$uri")
+            Log.d(DL_TAG, "[nameMeta-check] encodedQuery(len=${encoded.length}) head='${encoded.take(120)}'")
+            Log.d(DL_TAG, "[nameMeta-check] ${summarize("raw", raw)}")
+            Log.d(DL_TAG, "[nameMeta-check] ${summarize("getQP", getQP)}")
+
+            if (raw != null && getQP != null && raw != getQP) {
+                val hint = when {
+                    getQP.contains(' ') && !raw.contains(' ') -> "getQP にスペース混入（'+' が ' ' に変換された可能性）"
+                    else -> "raw と getQP が不一致（URLデコード差分あり）"
+                }
+                Log.w(DL_TAG, "[nameMeta-check] ⚠️ raw != getQP : $hint")
+            }
+
+            fun withPadding(s: String): String {
+                val mod = s.length % 4
+                return if (mod == 0) s else s + "=".repeat(4 - mod)
+            }
+
+            fun sha256Hex(bytes: ByteArray): String {
+                val md = MessageDigest.getInstance("SHA-256")
+                return md.digest(bytes).joinToString("") { "%02x".format(it) }
+            }
+
+            fun tryDecode(label: String, v: String?, flags: Int): String {
+                if (v.isNullOrBlank()) return "$label:skip"
+                // Uri.getQueryParameter 経由だと '+' が空白化している可能性があるため、ここではそのまま試す（検証目的）
+                val padded = withPadding(v.trim())
+                return runCatching {
+                    val b = Base64.decode(padded, flags)
+                    "$label:ok bytes=${b.size} sha256=${sha256Hex(b).take(16)}..."
+                }.getOrElse { e ->
+                    "$label:fail ${e.javaClass.simpleName}: ${e.message}"
+                }
+            }
+
+            Log.d(DL_TAG, "[nameMeta-check] decode(raw,DEFAULT) ${tryDecode("raw.DEFAULT", raw, Base64.DEFAULT)}")
+            Log.d(DL_TAG, "[nameMeta-check] decode(raw,URL_SAFE) ${tryDecode("raw.URL_SAFE", raw, Base64.URL_SAFE)}")
+            Log.d(DL_TAG, "[nameMeta-check] decode(getQP,DEFAULT) ${tryDecode("getQP.DEFAULT", getQP, Base64.DEFAULT)}")
+            Log.d(DL_TAG, "[nameMeta-check] decode(getQP,URL_SAFE) ${tryDecode("getQP.URL_SAFE", getQP, Base64.URL_SAFE)}")
+
+            if (!getQP.isNullOrBlank() && getQP.contains(' ')) {
+                val restored = getQP.replace(' ', '+')
+                Log.w(DL_TAG, "[nameMeta-check] try restore spaces -> '+' then decode")
+                Log.d(DL_TAG, "[nameMeta-check] decode(restored,DEFAULT) ${tryDecode("restored.DEFAULT", restored, Base64.DEFAULT)}")
+                Log.d(DL_TAG, "[nameMeta-check] decode(restored,URL_SAFE) ${tryDecode("restored.URL_SAFE", restored, Base64.URL_SAFE)}")
+            }
+        }
+
+
         val pathSegments = uri.pathSegments ?: emptyList()
 
         // /folder/<ID>
@@ -420,6 +495,7 @@ class HomeActivity : ComponentActivity() {
 
         // iOS/Android: 一覧表示用 nameMeta（base64url JSON）
         // getQueryParameter だと '+' が空白化することがあるので raw 抽出を優先
+        debugNameMetaIntegrity()
         val nameMeta = getRawQueryParam("nameMeta") ?: uri.getQueryParameter("nameMeta")
 
         val uuid = uri.getQueryParameter("uuid")
@@ -504,8 +580,8 @@ class HomeActivity : ComponentActivity() {
             if (nameMeta.isBlank()) return@runCatching
 
             val kd = KeyDerivation.getInstance(context)
-            // iOS(Swift) と同じ派生パスで復号する
-            val recipientPriv = kd.getCurrentPrivateKeyHex("m/44'/0'/0'/0/0")
+            // ✅ 仕様: nameMeta の AESKey は「受信者の derivedKey(/1)」で復号する
+            val recipientPriv = kd.getCurrentPrivateKeyHex(KeyDerivation.DERIVED_KEY_PATH)
 
             val plainName = com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
                 nameMetaBase64Url = nameMeta,

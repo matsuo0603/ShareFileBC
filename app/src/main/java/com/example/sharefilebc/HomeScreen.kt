@@ -168,6 +168,22 @@ fun HomeScreen(
     val account = remember { GoogleSignIn.getLastSignedInAccount(context) }
     val accountName = account?.displayName
     val accountEmail = account?.email
+
+    /**
+     * ✅ 重要: 公開鍵リンク/公開鍵ファイルの emailParam(ownerEmail) は「送信者本人のメールアドレス」だけにする。
+     *
+     * ここが recipient のメールにすり替わると、iOS 側は「別人の鍵」として保存してしまい、
+     * 結果的に iOS→Android の暗号化で “別の受信者の公開鍵” が選ばれ、Android 側で復号できず
+     * AES-GCM の "GCMタグ不一致" (BadTag) になります。
+     */
+    fun requireSenderEmail(): String {
+        val email = accountEmail
+        if (email.isNullOrBlank()) {
+            Toast.makeText(context, "Googleログイン情報が取得できません。再ログインしてください", Toast.LENGTH_LONG).show()
+            throw IllegalStateException("GoogleSignIn accountEmail is null")
+        }
+        return email
+    }
     val googleSignInClient = remember {
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
@@ -313,7 +329,7 @@ fun HomeScreen(
                                             fileName = fileName,
                                             folderId = folderId,
                                             fileId = fileId,
-                                            senderPublicKeyHex = senderDerivedPublicKey,
+                                            senderPublicKeyHex = senderTrustLayerPublicKey,
                                             threshold = threshold,
                                             senderAddress = refundAddress,
                                             uuid = uuid,
@@ -540,7 +556,7 @@ fun HomeScreen(
                                         }
                                     }
                                     val registrationUrl = PublicKeyLinkBuilder.build(
-                                        email = accountEmail ?: user.email,
+                                        email = requireSenderEmail(),
                                         derivedPublicKey = derivedPublicKey,
                                         trustLayerPublicKey = trustLayerPublicKey,
                                         folderId = folderId
@@ -553,7 +569,7 @@ fun HomeScreen(
                                         val km = KeyManager.getInstance(context)
                                         Log.d(
                                             "PUBKEY_DEBUG",
-                                            "[sendPubKeyLink:onShare] to=${user.email} emailParam=${accountEmail ?: user.email} " +
+                                            "[sendPubKeyLink:onShare] to=${user.email} emailParam=${requireSenderEmail()} " +
                                                     "derivedPublicKey=$derivedPublicKey trustLayerPublicKey=$trustLayerPublicKey folderId=$folderId " +
                                                     "myDerivedPub(m/44'/0'/0'/0/0)=$myPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$registrationUrl"
                                         )
@@ -695,7 +711,7 @@ fun HomeScreen(
                                             context = context,
                                             parentFolderId = folderId,
                                             payload = DriveServiceHelper.PublicKeyPayload(
-                                                ownerEmail = accountEmail ?: email,
+                                                ownerEmail = requireSenderEmail(),
                                                 senderMasterPublicKeyHex = trustLayerPublicKey,
                                                 senderDerivedPublicKeyHex = derivedPublicKey,
                                                 trustLayerPublicKey = trustLayerPublicKey,
@@ -705,7 +721,7 @@ fun HomeScreen(
                                         )
                                     }
                                     PublicKeyLinkBuilder.build(
-                                        email = accountEmail ?: email,
+                                        email = requireSenderEmail(),
                                         derivedPublicKey = derivedPublicKey,
                                         trustLayerPublicKey = trustLayerPublicKey,
                                         folderId = folderId
@@ -727,7 +743,7 @@ fun HomeScreen(
                                             val km = KeyManager.getInstance(context)
                                             Log.d(
                                                 "PUBKEY_DEBUG",
-                                                "[sendPubKeyLink:onRegister] to=${email} emailParam=${accountEmail ?: email} " +
+                                                "[sendPubKeyLink:onRegister] to=${email} emailParam=${requireSenderEmail()} " +
                                                         "derivedPublicKey=${parsed?.derivedPublicKey} trustLayerPublicKey=${parsed?.trustLayerPublicKey} folderId=${parsed?.folderId} " +
                                                         "myDerivedPub(m/44'/0'/0'/0/0)=$myPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$url"
                                             )

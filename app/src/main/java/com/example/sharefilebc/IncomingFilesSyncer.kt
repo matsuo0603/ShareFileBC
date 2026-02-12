@@ -240,14 +240,56 @@ object IncomingFilesSyncer {
             Log.d(TAG, "   nameMeta length: ${nm.length}")
 
             val kd = KeyDerivation.getInstance(context)
-            val recipientPriv = kd.getCurrentPrivateKeyHex("m/44'/0'/0'/0/0")
+            // ✅ 仕様: nameMeta の AESKey は「受信者の derivedKey(/1)」で復号する
+            val recipientPriv = kd.getCurrentPrivateKeyHex(KeyDerivation.DERIVED_KEY_PATH)
+            val recipientPub = kd.getCurrentPublicKeyHex(KeyDerivation.DERIVED_KEY_PATH)
+            CryptoTrace.logReceiveKeyRoles(
+                event = "IncomingFilesSyncer.decryptNameMeta",
+                senderParam = meta.senderPublicKey,
+                signerPubKeyUsedForVerify = meta.senderPublicKey,
+                recipientPathUsedForDecrypt = KeyDerivation.DERIVED_KEY_PATH,
+                recipientPrivKeyHexUsed = recipientPriv,
+                recipientPubDerivedFromPriv = recipientPub
+            )
+
             Log.d(TAG, "   recipientPrivKey: ${recipientPriv.take(16)}...")
-            Log.d(TAG, "   senderPublicKey: ${meta.senderPublicKey.take(16)}...")
+
+            // ✅ 署名検証鍵は sender パラメータが誤っている可能性があるため、DB にある /0 も候補に含める
+            // NOTE: 共有リンクには senderEmail が入っていないため、IncomingFilesSyncer の meta から email を参照できない。
+            //       代わりに「senderPublicKey(/0) → email_keys を逆引き」して email を特定できる場合のみ候補を追加する。
+            val db = AppDatabase.getDatabase(context.applicationContext)
+            val signerCandidates = mutableListOf<String>()
+            val direct = meta.senderPublicKey.trim().takeIf { it.isNotBlank() }
+            if (direct != null) signerCandidates.add(direct)
+
+            val senderEmailFromDb: String? = if (direct != null) {
+                runCatching { db.emailKeyDao().findByTrustLayerPublicKey(direct)?.email }
+                    .getOrNull()
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            } else null
+
+            if (senderEmailFromDb != null) {
+                // email_keys に保存されている /0（TrustLayer）公開鍵
+                val ek = runCatching { db.emailKeyDao().findByEmail(senderEmailFromDb) }.getOrNull()
+                val pk0 = ek?.trustLayerPublicKey?.trim()?.takeIf { it.isNotBlank() }
+                if (pk0 != null && !signerCandidates.contains(pk0)) signerCandidates.add(pk0)
+
+                // user テーブルに保存されている公開鍵（存在する場合）も候補に入れる
+                val user = runCatching { db.userDao().findByEmail(senderEmailFromDb) }.getOrNull()
+                val pkUser = user?.publicKeyHex?.trim()?.takeIf { it.isNotBlank() }
+                if (pkUser != null && !signerCandidates.contains(pkUser)) signerCandidates.add(pkUser)
+            }
+
+            val signerCandidatesJoined = signerCandidates.joinToString(",")
+
+            Log.d(TAG, "   senderPublicKey(direct): ${meta.senderPublicKey.take(16)}...")
+            Log.d(TAG, "   signerCandidates(count)=${signerCandidates.size}")
 
             com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
                 nameMetaBase64Url = nm,
                 recipientPrivateKeyHex = recipientPriv,
-                signerPublicKeyHex = meta.senderPublicKey
+                signerPublicKeyHex = signerCandidatesJoined
             )
         }
 

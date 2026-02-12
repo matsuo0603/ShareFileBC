@@ -100,6 +100,32 @@ object EmailSender {
         // 旧仕様のフォルダ直リンク（常に用意しておく）
         val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
+        // --- KEY ROLE DEBUG (送信側) ---
+        // sender= に入れる公開鍵が、どのパスの鍵かをログで確定させる
+        if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+            runCatching {
+                val kd = KeyDerivation.getInstance(context)
+                val PATH0 = KeyDerivation.TRUST_LAYER_PATH
+                val PATH1 = KeyDerivation.DERIVED_KEY_PATH
+                val myPub0 = kd.getCurrentPublicKeyHex(PATH0)
+                val myPriv0 = kd.getCurrentPrivateKeyHex(PATH0)
+                val myPub1 = kd.getCurrentPublicKeyHex(PATH1)
+                val myPriv1 = kd.getCurrentPrivateKeyHex(PATH1)
+                CryptoTrace.logMyKeySnapshot(
+                    event = "EmailSender.sendEmailWithDriveLink:newFormat",
+                    path0 = PATH0,
+                    pub0 = myPub0,
+                    priv0Hex = myPriv0,
+                    path1 = PATH1,
+                    pub1 = myPub1,
+                    priv1Hex = myPriv1
+                )
+                Log.d(TAG, "[KEY_ROLE][SEND] senderParam(full)=$senderPublicKeyHex matchPub0=${senderPublicKeyHex.equals(myPub0, true)} matchPub1=${senderPublicKeyHex.equals(myPub1, true)}")
+            }.onFailure {
+                Log.w(TAG, "[KEY_ROLE][SEND] snapshot failed: ${it.message}")
+            }
+        }
+
         // ✅ 新仕様のときだけ、Driveのdescriptionに shareメタを保存（自動受信用）
         // 失敗してもメール送信は続行する（絶対に壊さない）
         if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
@@ -176,13 +202,13 @@ object EmailSender {
         runCatching {
             val parsed = PublicKeyLinkBuilder.parse(Uri.parse(registrationUrl))
             val kd = KeyDerivation.getInstance(context)
-            val myDerivedPub = kd.getCurrentPublicKeyHex("m/44'/0'/0'/0/0")
+            val myDerivedPub = kd.getCurrentPublicKeyHex(KeyDerivation.TRUST_LAYER_PATH)
             val km = KeyManager.getInstance(context)
             Log.d(
                 TAG,
                 "[PUBKEY_DEBUG] sendPublicKeyRegistrationEmail to=$recipientEmail " +
                         "emailParam=${parsed?.email} derived=${parsed?.derivedPublicKey} trust=${parsed?.trustLayerPublicKey} folderId=${parsed?.folderId} " +
-                        "myDerivedPub(m/44'/0'/0'/0/0)=$myDerivedPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$registrationUrl"
+                        "myTrustPub(TRUST_LAYER_PATH)=$myDerivedPub masterFp=${km.getMasterXprvFingerprintOrNull()} url=$registrationUrl"
             )
         }.onFailure {
             Log.w(TAG, "[PUBKEY_DEBUG] parse failed url=$registrationUrl")
