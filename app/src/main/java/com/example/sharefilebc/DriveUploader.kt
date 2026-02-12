@@ -140,7 +140,7 @@ class DriveUploader(private val context: Context) {
                 // ✅ デバッグ: iOS との互換確認用（nameMeta は URL-safe Base64 のはず）
                 Log.d("DriveUploader", "🔐 nameMeta(base64url) len=${secure.nameMetaBase64.length} head=${secure.nameMetaBase64.take(24)}")
 
-                val uploadName = "$fileName.vpfs"
+                val uploadName = "securePackage.vpfs"
 
                 val fileMetadata = File().apply {
                     name = uploadName

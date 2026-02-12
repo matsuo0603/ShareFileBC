@@ -26,6 +26,7 @@ import java.util.TimeZone
 object IncomingFilesSyncer {
 
     private const val TAG = "IncomingFilesSyncer"
+    private const val NAME_TAG = "NAME_META"
 
     private val dateRegex = Regex("\\d{4}-\\d{2}-\\d{2}")
 
@@ -371,8 +372,12 @@ object IncomingFilesSyncer {
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
 
-            // Swift版 URL 由来で nameMeta が入ることがある（Androidから送る場合は空でもOK）
-            val nameMeta = uri.getQueryParameter("nameMeta")?.trim()?.takeIf { it.isNotBlank() }
+            // Swift版/Android版とも nameMeta(Base64) はURL上で % エンコードされる想定。
+            // ただし過去ビルドや一部クライアントで '+' が空白に化けるケースがあるため補正する。
+            val nameMeta = uri.getQueryParameter("nameMeta")
+                ?.trim()
+                ?.replace(" ", "+")
+                ?.takeIf { it.isNotBlank() }
 
             val txids = buildList {
                 uri.getQueryParameter("txid")
@@ -390,7 +395,14 @@ object IncomingFilesSyncer {
                 addAll(uri.getQueryParameters("txid").map { it.trim() }.filter { it.isNotBlank() })
             }.distinct()
 
-            if (uuid.isBlank() || sender.isBlank() || threshold == 0uL || txids.isEmpty()) return null
+            if (uuid.isBlank() || sender.isBlank() || threshold == 0uL || txids.isEmpty()) {
+                Log.w(
+                    NAME_TAG,
+                    "share meta incomplete: uuid='${uuid.take(16)}' senderLen=${sender.length} " +
+                            "txids=${txids.size} nameMetaLen=${nameMeta?.length ?: 0} q='${q.take(200)}'"
+                )
+                return null
+            }
 
             ShareMeta(
                 uuid = uuid,

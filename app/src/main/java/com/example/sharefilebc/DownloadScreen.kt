@@ -134,7 +134,6 @@ fun DownloadScreen(
     var selectedSender by remember { mutableStateOf<String?>(null) }
     var detailState by remember { mutableStateOf<ReceivedSenderDetailUi?>(null) }
     val detailCache = remember { mutableStateMapOf<String, ReceivedSenderDetailUi>() }
-    var pendingAutoDownloadFileId by remember { mutableStateOf(initialFileId) }
     var isPaying by remember { mutableStateOf(false) }
 
     val walletManager = remember { WalletManager.getInstance(context) }
@@ -213,8 +212,8 @@ fun DownloadScreen(
         val targetFolderId = initialFolderId
             ?.takeIf { it.isNotBlank() }
             ?: initialFileId
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "file:$it" }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { "file:$it" }
         // folderId（または擬似 folderId）が Room に存在するなら、その sender を開く
         val matched = targetFolderId?.let { fid ->
             receivedFolders.firstOrNull { it.folderId == fid }
@@ -222,7 +221,6 @@ fun DownloadScreen(
 
         if (matched != null) {
             selectedSender = matched.senderName
-            pendingAutoDownloadFileId = initialFileId
             needsLogin = false
         } else {
             // まだ Shared 側の受信処理が DB 保存を終えてない可能性があるので
@@ -304,18 +302,6 @@ fun DownloadScreen(
         detailCache[sender] = detail
     }
 
-    LaunchedEffect(detailState, pendingAutoDownloadFileId, canDownload) {
-        val targetFileId = pendingAutoDownloadFileId ?: return@LaunchedEffect
-        if (!canDownload) return@LaunchedEffect
-        val detail = detailState ?: return@LaunchedEffect
-        val exists = detail.dateGroups.any { group -> group.files.any { it.id == targetFileId } }
-        if (exists) {
-            isLoading = true
-            downloader.downloadFile(targetFileId)
-            isLoading = false
-            pendingAutoDownloadFileId = null
-        }
-    }
 
     val paymentInfo = if (requiresPayment && deepLinkThreshold != null && deepLinkSenderAddress != null) {
         PaymentInfoUi(

@@ -58,6 +58,76 @@ class DriveDownloader(private val context: Context) {
     // ここがズレると ECIES で復号した AESKey が不一致となり、AES-GCM のタグ不一致(AEADBadTagException) になる。
     private val RECIPIENT_PRIVATE_KEY_PATH = "m/44'/0'/0'/0/0"
 
+    /**
+     * Drive上の実ファイル名は securePackage.vpfs のままなので、
+     * 受信一覧では Room(received_files) に保存してある「復号済みファイル名」を優先して表示する。
+     *
+     * deep link で nameMeta を受け取った直後は、Drive(sharedWithMe) に出てこないケースがある
+     * （anyone:reader の“公開リンク共有”）ため、
+     * "file:<fileId>" の擬似フォルダ表示でも必ずここを通して表示名を決める。
+     */
+    private suspend fun resolveDisplayFileName(fileId: String, driveName: String?): String {
+        val fallback = driveName ?: "securePackage.vpfs"
+
+        val db = AppDatabase.getDatabase(context)
+        val row = runCatching { db.receivedFileDao().findByFileId(fileId) }.getOrNull()
+
+        // 既に復号済みの名前が保存されているならそれを使う
+        val savedName = row?.fileName?.trim().orEmpty()
+        if (savedName.isNotBlank() && !isVpfsLikeFileName(savedName)) {
+            return savedName
+        }
+
+        // nameMeta があり、かつ表示名が .vpfs のままなら、ここで「ファイル名だけ」復号して DB に保存する
+        val nameMeta = row?.nameMetadata?.trim().orEmpty()
+        val signerPub = row?.senderPublicKey?.trim().orEmpty()
+        if (nameMeta.isBlank() || signerPub.isBlank()) {
+            return fallback
+        }
+        if (!isVpfsLikeFileName(fallback) && !isVpfsLikeFileName(savedName)) {
+            return fallback
+        }
+
+        return runCatching {
+            val kd = KeyDerivation.getInstance(context)
+            val recipientPriv = kd.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
+
+            val plainName = SecurePackage.decryptFileNameFromNameMeta(
+                nameMetaBase64Url = nameMeta,
+                recipientPrivateKeyHex = recipientPriv,
+                signerPublicKeyHex = signerPub
+            )
+
+            // DB に保存（次回以降、UIはDBの名前を優先できる）
+            runCatching {
+                val dao = db.receivedFileDao()
+                val latest = dao.findByFileId(fileId)
+                if (latest != null) {
+                    dao.insert(
+                        latest.copy(
+                            fileName = plainName,
+                            nameMetadataError = null
+                        )
+                    )
+                }
+            }
+
+            Log.d("DriveDownloader", "✅ resolved display fileName via nameMeta: fileId=$fileId -> $plainName")
+            plainName
+        }.getOrElse { e ->
+            // 次の切り分け用に DB に残す
+            runCatching {
+                val dao = db.receivedFileDao()
+                val latest = dao.findByFileId(fileId)
+                if (latest != null && latest.nameMetadataError.isNullOrBlank()) {
+                    dao.insert(latest.copy(nameMetadataError = "nameMeta decrypt failed: ${e.message}"))
+                }
+            }
+            Log.w("DriveDownloader", "⚠️ resolveDisplayFileName failed: fileId=$fileId reason=${e.message}")
+            fallback
+        }
+    }
+
     private fun isVpfsLikeFileName(name: String): Boolean {
         // .tmp も許容（temp保存してるため）
         return name.endsWith(".vpfs", ignoreCase = true) || name.contains(".vpfs", ignoreCase = true)
@@ -124,6 +194,9 @@ class DriveDownloader(private val context: Context) {
                         .setFields("id, name, mimeType, createdTime, owners(displayName, emailAddress)")
                         .execute()
 
+                    // ✅ 受信一覧では Room に保存した復号済みファイル名を優先して表示する
+                    val displayName = resolveDisplayFileName(fileId = file.id, driveName = file.name)
+
                     val jst = TimeZone.getTimeZone("Asia/Tokyo")
                     val fullFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).apply {
                         timeZone = jst
@@ -144,7 +217,7 @@ class DriveDownloader(private val context: Context) {
                         files = listOf(
                             DriveFileInfo(
                                 id = file.id,
-                                name = file.name,
+                                name = displayName,
                                 mimeType = file.mimeType,
                                 isFolder = false,
                                 senderName = senderName,
@@ -206,9 +279,16 @@ class DriveDownloader(private val context: Context) {
                     val ownerDisplayName = owner?.displayName?.takeIf(String::isNotBlank)
                     val ownerEmail = owner?.emailAddress?.takeIf(String::isNotBlank)
 
+                    // ✅ ここでも「復号済みファイル名」を優先
+                    val displayName = if (isFolder) {
+                        file.name
+                    } else {
+                        resolveDisplayFileName(fileId = file.id, driveName = file.name)
+                    }
+
                     DriveFileInfo(
                         id = file.id,
-                        name = file.name,
+                        name = displayName,
                         mimeType = file.mimeType,
                         isFolder = isFolder,
                         senderName = if (isFolder) "" else (ownerDisplayName ?: ownerEmail ?: fallbackSenderName),

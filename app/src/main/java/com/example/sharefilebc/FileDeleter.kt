@@ -52,6 +52,26 @@ object FileDeleter {
         return calendar.time
     }
 
+    /**
+     * ✅ 文字列(yyyy-MM-dd HH:mm / yyyy-MM-dd HH:mm:ss) を JST で Date にする。
+     * Room 側に deleteDateTime を保存している前提なので、ここを最優先で使う。
+     */
+    private fun parseJSTDateTimeFlexible(dateTimeString: String): Date? {
+        val s = dateTimeString.trim()
+        if (s.isBlank()) return null
+        val tz = TimeZone.getTimeZone("Asia/Tokyo")
+        val patterns = listOf("yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm")
+        for (p in patterns) {
+            try {
+                val f = SimpleDateFormat(p, Locale.getDefault())
+                f.timeZone = tz
+                return f.parse(s)
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
     private fun formatJSTTime(date: Date): String {
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
         formatter.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
@@ -65,13 +85,19 @@ object FileDeleter {
         Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
 
         val expired = allFolders.filter { entry ->
-            val uploadDate = parseJSTDateTime(entry.uploadDateTime)
-            if (uploadDate != null) {
-                val deleteTime = calculateDeleteTime(uploadDate)
+            // ✅ 受信側は ReceivedFolderEntity.deleteDateTime を正に使う
+            val deleteTime = parseJSTDateTimeFlexible(entry.deleteDateTime)
+                ?: parseJSTDateTime(entry.uploadDateTime)?.let { calculateDeleteTime(it) }
+
+            if (deleteTime != null) {
+                val uploadDate = parseJSTDateTime(entry.uploadDateTime)
                 val isExpired = currentJSTTime.after(deleteTime)
 
                 Log.d("FileDeleter", "📂 ${entry.folderName}:")
-                Log.d("FileDeleter", "  アップロード時刻: ${formatJSTTime(uploadDate)}")
+                Log.d(
+                    "FileDeleter",
+                    "  アップロード時刻: ${uploadDate?.let { formatJSTTime(it) } ?: "N/A"}"
+                )
                 Log.d("FileDeleter", "  削除予定時刻: ${formatJSTTime(deleteTime)}")
                 Log.d("FileDeleter", "  削除対象: $isExpired")
 
@@ -99,13 +125,19 @@ object FileDeleter {
         Log.d("FileDeleter", "📅 現在のJST時刻: ${formatJSTTime(currentJSTTime)}")
 
         val expired = allSharedFiles.filter { entry ->
-            val uploadDate = parseJSTDateTime(entry.date)
-            if (uploadDate != null) {
-                val deleteTime = calculateDeleteTime(uploadDate)
+            // ✅ SharedFolderEntity は deleteDateTime を持っているのに、以前は date を見ていた（致命的）
+            val deleteTime = parseJSTDateTimeFlexible(entry.deleteDateTime)
+                ?: parseJSTDateTime(entry.date)?.let { calculateDeleteTime(it) }
+
+            if (deleteTime != null) {
+                val uploadDate = parseJSTDateTime(entry.date)
                 val isExpired = currentJSTTime.after(deleteTime)
 
                 Log.d("FileDeleter", "📄 ${entry.fileName}:")
-                Log.d("FileDeleter", "  アップロード時刻: ${formatJSTTime(uploadDate)}")
+                Log.d(
+                    "FileDeleter",
+                    "  アップロード時刻: ${uploadDate?.let { formatJSTTime(it) } ?: "N/A"}"
+                )
                 Log.d("FileDeleter", "  削除予定時刻: ${formatJSTTime(deleteTime)}")
                 Log.d("FileDeleter", "  削除対象: $isExpired")
 

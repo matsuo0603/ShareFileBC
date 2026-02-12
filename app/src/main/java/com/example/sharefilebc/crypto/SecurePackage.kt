@@ -124,7 +124,12 @@ object SecurePackage {
 
         val fileName = decName.toString(Charsets.UTF_8)
         println("✅ File name decrypted: $fileName")
-        return fileName
+        // iOS/Android共通仕様: 表示用ファイル名にコンテナ拡張子(.vpfs)は付けない
+        return if (fileName.endsWith(".vpfs", ignoreCase = true)) {
+            fileName.removeSuffix(".vpfs")
+        } else {
+            fileName
+        }
     }
 
     private fun decodeBase64UrlNoPadding(input: String): ByteArray {

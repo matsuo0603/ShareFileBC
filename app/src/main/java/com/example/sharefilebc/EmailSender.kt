@@ -209,18 +209,41 @@ object EmailSender {
 
     private suspend fun updateDriveDescriptionSafely(context: Context, fileId: String, description: String) {
         withContext(Dispatchers.IO) {
-            runCatching {
-                val drive = DriveServiceHelper.getDriveService(context)
-                val meta = DriveFile().apply { this.description = description }
+            // ✅ 共有後の受信側同期で nameMeta 等を取得できるように、Driveの description を確実に更新する。
+            // - supportsAllDrives を付ける（共有ドライブ等でも失敗しにくくする）
+            // - 短いリトライを入れる（直後の更新が失敗するケースの保険）
+            val drive = runCatching { DriveServiceHelper.getDriveService(context) }.getOrNull()
+            if (drive == null) {
+                Log.e(TAG, "❌ Drive service is null. skip description update. fileId=$fileId")
+                return@withContext
+            }
 
-                drive.files().update(fileId, meta)
-                    .setFields("id, description")
-                    .execute()
+            val meta = DriveFile().apply { this.description = description }
+            var lastErr: Throwable? = null
+            for (attempt in 1..3) {
+                val ok = runCatching {
+                    val updated = drive.files().update(fileId, meta)
+                        .setFields("id, description")
+                        .setSupportsAllDrives(true)
+                        .execute()
+                    Log.d(
+                        TAG,
+                        "✅ Drive description updated(attempt=$attempt): fileId=$fileId descLen=${updated.description?.length ?: 0}"
+                    )
+                    true
+                }.getOrElse { e ->
+                    lastErr = e
+                    Log.e(TAG, "❌ Drive description update failed(attempt=$attempt): fileId=$fileId", e)
+                    false
+                }
+                if (ok) break
+                // すぐリトライ（短時間）
+                Thread.sleep(200)
+            }
 
-                Log.d(TAG, "✅ Drive description updated: fileId=$fileId desc=$description")
-            }.onFailure { e ->
+            if (lastErr != null) {
                 // ✅ 失敗してもメール送信は壊さない
-                Log.e(TAG, "❌ Drive description update failed: fileId=$fileId", e)
+                Log.w(TAG, "⚠️ Drive description update ultimately failed: fileId=$fileId", lastErr)
             }
         }
     }

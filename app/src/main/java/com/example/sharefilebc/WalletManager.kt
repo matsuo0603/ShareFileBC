@@ -6,6 +6,7 @@ import android.util.Log
 import com.chaintope.tapyrus.wallet.Config
 import com.chaintope.tapyrus.wallet.Contract
 import com.chaintope.tapyrus.wallet.HdWallet
+import com.chaintope.tapyrus.wallet.NewException
 import com.chaintope.tapyrus.wallet.TransferParams
 import com.chaintope.tapyrus.wallet.TxOut
 import com.chaintope.tapyrus.wallet.generateMasterKey
@@ -104,8 +105,22 @@ class WalletManager private constructor(
             dbFilePath = dbPath
         )
 
-        wallet = HdWallet(config)
-        Log.d(tag, "✅ Wallet initialized successfully")
+        // ✅ ここで最も多い致命傷：
+        // - KeyManager が保持する master xprv と
+        // - tapyrus_wallet.db が過去に初期化された master key
+        // が一致しないと MasterKeyDoesNotMatch で死ぬ。
+        // これは「アンインストール/再インストールしてもデータが残る」「KeyManager の保存先だけ残る」
+        // などで簡単に発生する。
+        // → ここで検知したら DB をリセットして 1 回だけ再初期化する。
+        try {
+            wallet = HdWallet(config)
+            Log.d(tag, "✅ Wallet initialized successfully")
+        } catch (e: NewException.MasterKeyDoesNotMatch) {
+            Log.w(tag, "⚠️ MasterKeyDoesNotMatch. Resetting wallet DB and retrying once...", e)
+            Companion.resetWalletDatabaseIfNeeded(context)
+            wallet = HdWallet(config)
+            Log.d(tag, "✅ Wallet initialized successfully (after DB reset)")
+        }
 
         sync()
         ensureMyPublicKeyExists()

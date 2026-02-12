@@ -130,7 +130,9 @@ class LoginActivity : ComponentActivity() {
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() }
                     ) {
-                        // 明示タップ時もサインイン開始（古いトークンを明示的に捨ててから）
+                        // ✅ ここで signOut/revokeAccess しないと、
+                        // 以前のトークンや scope が残って Drive のアップロードが 401/403 で失敗することがある。
+                        // WorkManager のバックグラウンド処理は「ログイン後に」成立させる方針に切り替える。
                         googleSignInClient.signOut().addOnCompleteListener {
                             launcher.launch(googleSignInClient.signInIntent)
                         }
@@ -158,8 +160,7 @@ class LoginActivity : ComponentActivity() {
                 return
             }
 
-            // ===== Swift版寄り：ログイン成功という「イベント」で即同期 =====
-            // Home 画面表示前後で DB が更新されれば、UI は Flow/observe で自動反映される。
+            // ===== ログイン成功後に即同期 =====
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     val keyUpserts = PublicKeySyncer.syncOnce(this@LoginActivity)
@@ -172,7 +173,6 @@ class LoginActivity : ComponentActivity() {
 
             val intent = Intent(this, HomeActivity::class.java).apply {
                 putExtra("displayName", displayName)
-                // deep link に、folderId は extra に戻す（両経路で再現耐性UP）
                 deepLinkUriFromHomeActivity?.let { data = it }
                 folderIdFromHomeActivity?.let { putExtra("folderId", it) }
                 fileIdFromHomeActivity?.let { putExtra("fileId", it) }
