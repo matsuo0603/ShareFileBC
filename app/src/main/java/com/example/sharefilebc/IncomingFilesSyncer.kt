@@ -254,43 +254,45 @@ object IncomingFilesSyncer {
 
             Log.d(TAG, "   recipientPrivKey: ${recipientPriv.take(16)}...")
 
-            // ✅ 署名検証鍵は sender パラメータが誤っている可能性があるため、DB にある /0 も候補に含める
-            // NOTE: 共有リンクには senderEmail が入っていないため、IncomingFilesSyncer の meta から email を参照できない。
-            //       代わりに「senderPublicKey(/0) → email_keys を逆引き」して email を特定できる場合のみ候補を追加する。
+            val direct = meta.senderPublicKey.trim().takeIf { it.isNotBlank() } ?: ""
             val db = AppDatabase.getDatabase(context.applicationContext)
-            val signerCandidates = mutableListOf<String>()
-            val direct = meta.senderPublicKey.trim().takeIf { it.isNotBlank() }
-            if (direct != null) signerCandidates.add(direct)
 
-            val senderEmailFromDb: String? = if (direct != null) {
-                runCatching { db.emailKeyDao().findByTrustLayerPublicKey(direct)?.email }
+            // NOTE: 共有リンクには senderEmail が入っていない。
+            //       senderPublicKey → email_keys 逆引きができた場合だけ senderEmail を補助情報として使う。
+            val senderEmailFromDb: String? = if (direct.isNotBlank()) {
+                runCatching { db.emailKeyDao().findByAnyPublicKey(direct)?.email }
                     .getOrNull()
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
             } else null
 
-            if (senderEmailFromDb != null) {
-                // email_keys に保存されている /0（TrustLayer）公開鍵
-                val ek = runCatching { db.emailKeyDao().findByEmail(senderEmailFromDb) }.getOrNull()
-                val pk0 = ek?.trustLayerPublicKey?.trim()?.takeIf { it.isNotBlank() }
-                if (pk0 != null && !signerCandidates.contains(pk0)) signerCandidates.add(pk0)
-
-                // user テーブルに保存されている公開鍵（存在する場合）も候補に入れる
-                val user = runCatching { db.userDao().findByEmail(senderEmailFromDb) }.getOrNull()
-                val pkUser = user?.publicKeyHex?.trim()?.takeIf { it.isNotBlank() }
-                if (pkUser != null && !signerCandidates.contains(pkUser)) signerCandidates.add(pkUser)
-            }
-
-            val signerCandidatesJoined = signerCandidates.joinToString(",")
-
-            Log.d(TAG, "   senderPublicKey(direct): ${meta.senderPublicKey.take(16)}...")
-            Log.d(TAG, "   signerCandidates(count)=${signerCandidates.size}")
-
-            com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
-                nameMetaBase64Url = nm,
-                recipientPrivateKeyHex = recipientPriv,
-                signerPublicKeyHex = signerCandidatesJoined
+            val candidates = SignerKeyResolver.resolveCandidates(
+                context = context.applicationContext,
+                senderParamPubKeyHex = direct,
+                senderEmailOrNull = senderEmailFromDb
             )
+
+            Log.d(TAG, "   senderPublicKey(direct): ${direct.take(16)}...")
+            Log.d(TAG, "   signerCandidates: ${candidates.map { it.take(16) + "..." }}")
+
+            var lastErr: Throwable? = null
+            for (cand in candidates) {
+                try {
+                    val n = com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
+                        nameMetaBase64Url = nm,
+                        recipientPrivateKeyHex = recipientPriv,
+                        signerPublicKeyHex = cand
+                    )
+                    // fallback を使ったらログを残す
+                    if (!cand.equals(direct, ignoreCase = true)) {
+                        Log.w(TAG, "⚠️ nameMeta signer fallback used: senderParam=${direct.take(16)}... verified=${cand.take(16)}...")
+                    }
+                    return@runCatching n
+                } catch (t: Throwable) {
+                    lastErr = t
+                }
+            }
+            throw (lastErr ?: IllegalStateException("nameMeta decrypt failed"))
         }
 
         val decodedName: String? = decodedNameResult.getOrNull()

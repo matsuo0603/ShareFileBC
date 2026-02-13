@@ -256,10 +256,17 @@ object SecurePackage {
         }
 
         val signature = ECDSA.sign(message, signingPrivateKeyHex)
+
+        // DEBUG: iOS との突き合わせ用（署名対象のSHA256 と DER 署名サイズ）
+        runCatching {
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(message)
+            android.util.Log.d("CryptoTrace", "[NAME_META][SIGN] payloadSha256=" + android.util.Base64.encodeToString(sha, android.util.Base64.NO_WRAP) + " sigLen=" + signature.size)
+        }
+
         val signerPubKeyToEmbed = signerPublicKeyHex
             ?: derivePublicKeyHexFromPrivate(signingPrivateKeyHex)
 
-        // 4. ZIP(.vpfs)
+        // 4. vpfs(zip)
         val zipBytes = ByteArrayOutputStream()
         ZipOutputStream(zipBytes).use { zos ->
             fun putEntry(name: String, bytes: ByteArray) {
@@ -293,6 +300,7 @@ object SecurePackage {
             put("nameTag", android.util.Base64.encodeToString(encName.tag, android.util.Base64.NO_WRAP))
             put("nameCipher", android.util.Base64.encodeToString(encName.ciphertext, android.util.Base64.NO_WRAP))
             put("signature", android.util.Base64.encodeToString(signature, android.util.Base64.NO_WRAP))
+            put("signerPubKeyHex", signerPubKeyToEmbed)
         }
         val nameMetaBase64 = android.util.Base64.encodeToString(
             json.toString().toByteArray(Charsets.UTF_8),

@@ -148,21 +148,24 @@ class DriveUploader(private val context: Context) {
 
                 // ✅ 役割整合性ログ（推測ではなく、実際に使った値を確定させる）
                 // - ECIES(暗号化) に使った相手鍵: recipientPublicKeyHex
-                // - 署名に使う自分の鍵: trustLayerKey(/0)
-                // - メールURLの sender= に入れる鍵: signerPublicKeyHex
+                // - 署名に使う自分の鍵: Swift互換のため derivedKey(/1) を優先
+                //   ※ Swift版(DriveManager.swift) は senderIdentifier(= sender=) から EmailKey.derivedPublicKey を引いて
+                //      SecurePackage.verify(signature) を行っている。Androidが trustLayerKey(/0) で署名すると iOS 側で検証に失敗する。
+                // - メールURLの sender= に入れる鍵: signerPublicKeyHex（= 署名鍵と一致させる）
                 CryptoTrace.logSendKeyRoles(
                     event = "DriveUploader.encrypt",
                     recipientEmail = recipient.email,
                     recipientDerivedKey = effectiveKey.derivedPublicKey,
                     recipientTrustLayerKey = effectiveKey.trustLayerPublicKey,
                     recipientPubKeyUsedForECIES = recipientPublicKeyHex,
-                    signerPath = PATH_TRUST,
-                    signerPubKeyUsed = myPubTrust,
-                    senderParamInserted = myPubTrust
+                    signerPath = PATH_DERIVED,
+                    signerPubKeyUsed = myPubDerived,
+                    senderParamInserted = myPubDerived
                 )
 
-                val signingPrivateKeyHex = myPrivTrust
-                val signerPublicKeyHex = myPubTrust
+                // ✅ Swift互換: 署名は derivedKey(/1) を使う（sender= も同じ鍵にする）
+                val signingPrivateKeyHex = myPrivDerived
+                val signerPublicKeyHex = myPubDerived
 
                 // Swift版互換: nameMeta(Base64(JSON)) も同時に生成してメールURLに付与する
                 val secure = SecurePackage.createWithNameMeta(

@@ -18,6 +18,12 @@ interface EmailKeyDao {
     @Query("SELECT * FROM email_keys WHERE email = :email LIMIT 1")
     suspend fun findByEmail(email: String): EmailKeyEntity?
 
+    /**
+     * sender= に入ってくる公開鍵が derived/trust のどちらか分からないケースがあるため、逆引き用に追加。
+     */
+    @Query("SELECT * FROM email_keys WHERE derivedPublicKey = :publicKey LIMIT 1")
+    suspend fun findByDerivedPublicKey(publicKey: String): EmailKeyEntity?
+
     @Update
     suspend fun update(key: EmailKeyEntity)
 
@@ -27,4 +33,10 @@ interface EmailKeyDao {
      */
     @Query("SELECT * FROM email_keys WHERE trustLayerPublicKey = :publicKey LIMIT 1")
     suspend fun findByTrustLayerPublicKey(publicKey: String): EmailKeyEntity?
+
+    /**
+     * sender= がメールアドレスを含まないため、公開鍵だけから EmailKeyEntity を探す必要がある。
+     */
+    @Query("SELECT * FROM email_keys WHERE trustLayerPublicKey = :publicKey OR derivedPublicKey = :publicKey LIMIT 1")
+    suspend fun findByAnyPublicKey(publicKey: String): EmailKeyEntity?
 }

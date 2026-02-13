@@ -81,8 +81,8 @@ class DriveDownloader(private val context: Context) {
 
         // nameMeta があり、かつ表示名が .vpfs のままなら、ここで「ファイル名だけ」復号して DB に保存する
         val nameMeta = row?.nameMetadata?.trim().orEmpty()
-        val signerPub = row?.senderPublicKey?.trim().orEmpty()
-        if (nameMeta.isBlank() || signerPub.isBlank()) {
+        val senderParam = row?.senderPublicKey?.trim().orEmpty()
+        if (nameMeta.isBlank() || senderParam.isBlank()) {
             return fallback
         }
         if (!isVpfsLikeFileName(fallback) && !isVpfsLikeFileName(savedName)) {
@@ -93,20 +93,43 @@ class DriveDownloader(private val context: Context) {
             val kd = KeyDerivation.getInstance(context)
             val recipientPriv = kd.getCurrentPrivateKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
             val recipientPub = kd.getCurrentPublicKeyHex(RECIPIENT_PRIVATE_KEY_PATH)
+            val candidates = SignerKeyResolver.resolveCandidates(
+                context = context,
+                senderParamPubKeyHex = senderParam,
+                senderEmailOrNull = null
+            )
+
             CryptoTrace.logReceiveKeyRoles(
                 event = "DriveDownloader.resolveDisplayFileName:nameMeta",
-                senderParam = signerPub,
-                signerPubKeyUsedForVerify = signerPub,
+                senderParam = senderParam,
+                signerPubKeyUsedForVerify = candidates.firstOrNull() ?: senderParam,
                 recipientPathUsedForDecrypt = RECIPIENT_PRIVATE_KEY_PATH,
                 recipientPrivKeyHexUsed = recipientPriv,
                 recipientPubDerivedFromPriv = recipientPub
             )
 
-            val plainName = SecurePackage.decryptFileNameFromNameMeta(
-                nameMetaBase64Url = nameMeta,
-                recipientPrivateKeyHex = recipientPriv,
-                signerPublicKeyHex = signerPub
-            )
+            var lastErr: Throwable? = null
+            var plainName: String? = null
+            var verifiedKey: String? = null
+            for (cand in candidates) {
+                try {
+                    val n = SecurePackage.decryptFileNameFromNameMeta(
+                        nameMetaBase64Url = nameMeta,
+                        recipientPrivateKeyHex = recipientPriv,
+                        signerPublicKeyHex = cand
+                    )
+                    plainName = n
+                    verifiedKey = cand
+                    break
+                } catch (t: Throwable) {
+                    lastErr = t
+                }
+            }
+            if (plainName == null) throw (lastErr ?: IllegalStateException("nameMeta decrypt failed"))
+
+            if (verifiedKey != null && !verifiedKey.equals(senderParam, ignoreCase = true)) {
+                Log.w("DriveDownloader", "⚠️ nameMeta signer fallback used: senderParam=${senderParam.take(16)}... verified=${verifiedKey.take(16)}...")
+            }
 
             // DB に保存（次回以降、UIはDBの名前を優先できる）
             runCatching {
@@ -466,9 +489,20 @@ class DriveDownloader(private val context: Context) {
             Log.d("DriveDownloader", "📄 ファイル名: ${downloadedFile.name}")
             Log.d("DriveDownloader", "📧 送信者メール: $senderEmail")
 
-            val signerPublicKeyHex = resolveSignerPublicKeyHex(senderEmail, senderPublicKeyHex)
+            // ✅ Swift互換: sender= と署名鍵がズレるケースがあるので、複数候補で verify を試す。
+            val senderParam = senderPublicKeyHex?.trim().orEmpty()
+            val baseForResolve = if (senderParam.isNotBlank()) senderParam else {
+                resolveSignerPublicKeyHex(senderEmail, null)?.trim().orEmpty()
+            }
+            val candidates = if (baseForResolve.isNotBlank()) {
+                SignerKeyResolver.resolveCandidates(
+                    context = context,
+                    senderParamPubKeyHex = baseForResolve,
+                    senderEmailOrNull = senderEmail
+                )
+            } else emptyList()
 
-            if (signerPublicKeyHex.isNullOrBlank()) {
+            if (candidates.isEmpty()) {
                 Log.e("DriveDownloader", "❌ 復号に必要な送信者公開鍵が見つかりません")
                 Log.e("DriveDownloader", "💡 ヒント: 共有相手登録（公開鍵の交換）が完了しているか確認してください")
 
@@ -502,30 +536,41 @@ class DriveDownloader(private val context: Context) {
             )
 
             Log.d("DriveDownloader", "🔐 受信者公開鍵(path=$RECIPIENT_PRIVATE_KEY_PATH): ${recipientPublicKeyHex.take(16)}...")
-            Log.d("DriveDownloader", "✍️  送信者署名用公開鍵(/0): ${signerPublicKeyHex.take(16)}...")
+            Log.d("DriveDownloader", "✍️  signer candidates: ${candidates.map { it.take(16) + "..." }}")
             Log.d("DriveDownloader", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-            // ✅ SecurePackage 側で「複数候補の署名公開鍵」を順に試し、通った鍵を返す。
-            val (decryptedBytes, fileName, verifiedSignerPubKeyHex) = SecurePackage.unpack(
-                vpfsBytes = packageBytes,
-                recipientPrivateKeyHex = recipientPrivateKeyHex,
-                signerPublicKeyHex = signerPublicKeyHex
-            )
+            var lastErr: Throwable? = null
+            var unpacked: SecurePackage.Unpacked? = null
+            for (cand in candidates) {
+                try {
+                    val r = SecurePackage.unpack(
+                        vpfsBytes = packageBytes,
+                        recipientPrivateKeyHex = recipientPrivateKeyHex,
+                        signerPublicKeyHex = cand
+                    )
+                    unpacked = r
+                    break
+                } catch (t: Throwable) {
+                    lastErr = t
+                }
+            }
+            if (unpacked == null) throw (lastErr ?: IllegalStateException("signature verify failed"))
+
+            val (decryptedBytes, fileName, verifiedSignerPubKeyHex) = unpacked
 
             // 🔎 sender パラメータが誤っていた場合にここで判定できる（iOS側の senderKey が未保存で別鍵になるケース）
-            if (!senderPublicKeyHex.isNullOrBlank() && !senderPublicKeyHex.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
+            if (!senderParam.isBlank() && !senderParam.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
                 Log.w(
                     "DriveDownloader",
-                    "⚠ signerPublicKey mismatch: senderParam=${senderPublicKeyHex.take(16)}... verified=${verifiedSignerPubKeyHex.take(16)}..."
+                    "⚠ signerPublicKey mismatch: senderParam=${senderParam.take(16)}... verified=${verifiedSignerPubKeyHex.take(16)}..."
                 )
             }
 
             // sender パラメータ or DB の鍵がズレていた場合はログに残す（原因切り分け用）
-            val directSender = senderPublicKeyHex?.trim().orEmpty()
-            if (directSender.isNotBlank() && !directSender.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
+            if (senderParam.isNotBlank() && !senderParam.equals(verifiedSignerPubKeyHex, ignoreCase = true)) {
                 Log.w(
                     "DriveDownloader",
-                    "⚠ signer mismatch: senderParam=$directSender verified=$verifiedSignerPubKeyHex"
+                    "⚠ signer mismatch: senderParam=$senderParam verified=$verifiedSignerPubKeyHex"
                 )
             }
 

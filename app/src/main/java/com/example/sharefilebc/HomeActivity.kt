@@ -583,11 +583,39 @@ class HomeActivity : ComponentActivity() {
             // ✅ 仕様: nameMeta の AESKey は「受信者の derivedKey(/1)」で復号する
             val recipientPriv = kd.getCurrentPrivateKeyHex(KeyDerivation.DERIVED_KEY_PATH)
 
-            val plainName = com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
-                nameMetaBase64Url = nameMeta,
-                recipientPrivateKeyHex = recipientPriv,
-                signerPublicKeyHex = senderKey
-            )
+            // ✅ Swift互換: sender= の鍵が「署名鍵」と一致しない可能性がある。
+            // senderParam を先頭に、DB(email_keys) の derived/trust のペアを候補として順に検証する。
+            val candidates = withContext(Dispatchers.IO) {
+                SignerKeyResolver.resolveCandidates(
+                    context = context,
+                    senderParamPubKeyHex = senderKey,
+                    // deep link には送信者メールが無い（受信者メール等しか無い）ので null
+                    senderEmailOrNull = null
+                )
+            }
+
+            var lastErr: Throwable? = null
+            var plainName: String? = null
+            var verifiedKey: String? = null
+            for (cand in candidates) {
+                try {
+                    val n = com.example.sharefilebc.crypto.SecurePackage.decryptFileNameFromNameMeta(
+                        nameMetaBase64Url = nameMeta,
+                        recipientPrivateKeyHex = recipientPriv,
+                        signerPublicKeyHex = cand
+                    )
+                    plainName = n
+                    verifiedKey = cand
+                    break
+                } catch (t: Throwable) {
+                    lastErr = t
+                }
+            }
+            if (plainName == null) throw (lastErr ?: IllegalStateException("nameMeta decrypt failed"))
+
+            if (verifiedKey != null && !verifiedKey.equals(senderKey, ignoreCase = true)) {
+                Log.w(DL_TAG, "[bootstrap] ⚠️ signer fallback used: senderParam=${senderKey.take(16)}... verified=${verifiedKey.take(16)}...")
+            }
 
             withContext(Dispatchers.IO) {
                 val dao = db.receivedFileDao()
