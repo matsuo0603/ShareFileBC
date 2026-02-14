@@ -2,6 +2,7 @@ package com.example.sharefilebc.crypto
 
 import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import com.example.sharefilebc.crypto.HexUtils.toHexString
+import com.example.sharefilebc.crypto.PublicKeyUtils.compressedPublicKeyHexFromPrivateKeyHex
 import com.example.sharefilebc.crypto.PublicKeyUtils
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -255,16 +256,34 @@ object SecurePackage {
             bout.toByteArray()
         }
 
-        val signature = ECDSA.sign(message, signingPrivateKeyHex)
-
-        // DEBUG: iOS との突き合わせ用（署名対象のSHA256 と DER 署名サイズ）
-        runCatching {
-            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(message)
-            android.util.Log.d("CryptoTrace", "[NAME_META][SIGN] payloadSha256=" + android.util.Base64.encodeToString(sha, android.util.Base64.NO_WRAP) + " sigLen=" + signature.size)
+        // ✅ 送信側で「署名に使った秘密鍵 ↔ 公開鍵」の対応を必ず確定する。
+        // ここがズレると iOS は署名検証が100%失敗し、ファイル名復号もダウンロードもできない。
+        val signerPubFromPriv = compressedPublicKeyHexFromPrivateKeyHex(signingPrivateKeyHex)
+        val providedSignerPub = signerPublicKeyHex?.trim()
+        val signerPubKeyToEmbed = when {
+            providedSignerPub.isNullOrBlank() -> signerPubFromPriv
+            providedSignerPub.equals(signerPubFromPriv, ignoreCase = true) -> providedSignerPub
+            else -> {
+                android.util.Log.e(
+                    "CryptoTrace",
+                    "[NAME_META][SIGN_KEY_MISMATCH] providedSignerPub=$providedSignerPub derivedFromPriv=$signerPubFromPriv -> override to derivedFromPriv"
+                )
+                signerPubFromPriv
+            }
         }
 
-        val signerPubKeyToEmbed = signerPublicKeyHex
-            ?: derivePublicKeyHexFromPrivate(signingPrivateKeyHex)
+        val signature = ECDSA.sign(message, signingPrivateKeyHex)
+
+        // DEBUG: iOS との突き合わせ用（署名対象のSHA256 / DER署名サイズ / 自己検証結果）
+        runCatching {
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(message)
+            val shaB64 = android.util.Base64.encodeToString(sha, android.util.Base64.NO_WRAP)
+            val selfVerify = ECDSA.verify(message, signature, signerPubKeyToEmbed)
+            android.util.Log.d(
+                "CryptoTrace",
+                "[NAME_META][SIGN] payloadSha256=$shaB64 sigLen=${signature.size} signerPub=$signerPubKeyToEmbed selfVerify=$selfVerify"
+            )
+        }
 
         // 4. vpfs(zip)
         val zipBytes = ByteArrayOutputStream()

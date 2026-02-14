@@ -21,6 +21,14 @@ object ECDSA {
 
     private const val CURVE_NAME = "secp256k1"
 
+    // secp256k1 curve order (n)
+    // n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
+    private val CURVE_N: BigInteger = BigInteger(
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16
+    )
+    private val HALF_CURVE_N: BigInteger = CURVE_N.shiftRight(1)
+
     /**
      * message に対して privateKeyHex（32byte）で DER 署名する。
      */
@@ -35,7 +43,12 @@ object ECDSA {
         // ここで事前に sha256(message) してしまうと "SHA256(SHA256(message))" になり
         // iOS と不一致になって署名検証が必ず失敗する。
         sig.update(message)
-        return sig.sign()  // DER 形式
+        val der = sig.sign()  // DER 形式
+
+        // ✅ iOS(P256K) 互換のため low-S 正規化(canonical) を行う。
+        // P256K の ECDSASignature(derRepresentation:) は high-S を弾く(または isValidSignature が false) ことがある。
+        // その場合、iOS 側で「署名検証失敗」になり、nameMeta 復号にも本体復号にも進めない。
+        return normalizeDerToLowS(der)
     }
 
     /**
@@ -51,7 +64,18 @@ object ECDSA {
 
         // iOS と同じく「message をそのまま渡す（内部で SHA-256）」
         sig.update(message)
-        val ok = sig.verify(signature)
+        var ok = sig.verify(signature)
+
+        // high-S 署名が来た場合でも検証できるようにフォールバック。
+        if (!ok) {
+            ok = runCatching {
+                val normalized = normalizeDerToLowS(signature)
+                val sigN = Signature.getInstance("SHA256withECDSA", provider)
+                sigN.initVerify(publicKey)
+                sigN.update(message)
+                sigN.verify(normalized)
+            }.getOrDefault(false)
+        }
 
         // 互換性のため、過去に二重ハッシュで署名してしまったデータが存在する可能性もある。
         // その場合だけフォールバック検証を試す（ログ解析用）。
@@ -65,6 +89,87 @@ object ECDSA {
             }.getOrDefault(false)
         }
         return true
+    }
+
+    /**
+     * DER(ECDSA) 署名を low-S (canonical) に正規化して DER を返す。
+     * - s > n/2 のとき s = n - s
+     * - それ以外はそのまま
+     */
+    private fun normalizeDerToLowS(der: ByteArray): ByteArray {
+        val (r, s) = parseDerSignature(der)
+        val sNorm = if (s > HALF_CURVE_N) CURVE_N.subtract(s) else s
+        if (sNorm == s) return der
+        return encodeDerSignature(r, sNorm)
+    }
+
+    /**
+     * ASN.1 DER 形式の ECDSA 署名 (SEQUENCE { INTEGER r; INTEGER s }) をパースする。
+     */
+    private fun parseDerSignature(der: ByteArray): Pair<BigInteger, BigInteger> {
+        var idx = 0
+        fun readByte(): Int = der[idx++].toInt() and 0xFF
+        fun readLen(): Int {
+            val b = readByte()
+            if (b and 0x80 == 0) return b
+            val n = b and 0x7F
+            var len = 0
+            repeat(n) { len = (len shl 8) or readByte() }
+            return len
+        }
+
+        require(readByte() == 0x30) { "Invalid DER: not a SEQUENCE" }
+        readLen() // total length
+
+        require(readByte() == 0x02) { "Invalid DER: missing r INTEGER" }
+        val rLen = readLen()
+        val rBytes = der.copyOfRange(idx, idx + rLen)
+        idx += rLen
+        val r = BigInteger(1, rBytes)
+
+        require(readByte() == 0x02) { "Invalid DER: missing s INTEGER" }
+        val sLen = readLen()
+        val sBytes = der.copyOfRange(idx, idx + sLen)
+        idx += sLen
+        val s = BigInteger(1, sBytes)
+
+        return r to s
+    }
+
+    /**
+     * r, s を ASN.1 DER 形式へエンコードする。
+     */
+    private fun encodeDerSignature(r: BigInteger, s: BigInteger): ByteArray {
+        fun encodeInt(x: BigInteger): ByteArray {
+            var bytes = x.toByteArray()
+            // BigInteger.toByteArray() は符号付き。
+            // 不要な先頭 0x00 は落とし、必要な 0x00 は付ける。
+            if (bytes.size > 1 && bytes[0] == 0.toByte() && (bytes[1].toInt() and 0x80) == 0) {
+                bytes = bytes.copyOfRange(1, bytes.size)
+            }
+            if ((bytes[0].toInt() and 0x80) != 0) {
+                bytes = byteArrayOf(0) + bytes
+            }
+            return bytes
+        }
+
+        fun encodeLen(len: Int): ByteArray {
+            if (len < 0x80) return byteArrayOf(len.toByte())
+            val tmp = mutableListOf<Byte>()
+            var v = len
+            while (v > 0) {
+                tmp.add(0, (v and 0xFF).toByte())
+                v = v ushr 8
+            }
+            return byteArrayOf((0x80 or tmp.size).toByte()) + tmp.toByteArray()
+        }
+
+        val rBytes = encodeInt(r)
+        val sBytes = encodeInt(s)
+        val rPart = byteArrayOf(0x02) + encodeLen(rBytes.size) + rBytes
+        val sPart = byteArrayOf(0x02) + encodeLen(sBytes.size) + sBytes
+        val seqBody = rPart + sPart
+        return byteArrayOf(0x30) + encodeLen(seqBody.size) + seqBody
     }
 
     // ===== 内部ユーティリティ =====

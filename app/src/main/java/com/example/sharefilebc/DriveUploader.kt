@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import com.example.sharefilebc.crypto.SecurePackage
+import com.example.sharefilebc.crypto.PublicKeyUtils
 import com.example.sharefilebc.data.AppDatabase
 import com.example.sharefilebc.data.EmailKeyEntity
 import com.example.sharefilebc.data.SharedFolderEntity
@@ -152,6 +153,22 @@ class DriveUploader(private val context: Context) {
                 //   ※ Swift版(DriveManager.swift) は senderIdentifier(= sender=) から EmailKey.derivedPublicKey を引いて
                 //      SecurePackage.verify(signature) を行っている。Androidが trustLayerKey(/0) で署名すると iOS 側で検証に失敗する。
                 // - メールURLの sender= に入れる鍵: signerPublicKeyHex（= 署名鍵と一致させる）
+                // ✅ Swift互換: 署名は derivedKey(/1) を使う（sender= も同じ鍵にする）
+                val signingPrivateKeyHex = myPrivDerived
+                // ✅ 絶対に「署名に使う秘密鍵」から公開鍵を導出して sender= と一致させる
+                // これがズレると iOS は署名検証が100%失敗する
+                val signerPublicKeyHex = PublicKeyUtils.compressedPublicKeyHexFromPrivateKeyHex(signingPrivateKeyHex)
+
+                if (!signerPublicKeyHex.equals(myPubDerived, ignoreCase = true)) {
+                    Log.e(
+                        "DriveUploader",
+                        "🚨 SIGNER_KEY_MISMATCH: pubDerivedFromPriv != wallet.getCurrentPublicKeyHex(DERIVED)\n" +
+                                "  pubFromPriv=$signerPublicKeyHex\n" +
+                                "  pubFromWallet=$myPubDerived\n" +
+                                "  (Android側の鍵導出/保存が壊れている可能性あり。sender= は pubFromPriv を採用)"
+                    )
+                }
+
                 CryptoTrace.logSendKeyRoles(
                     event = "DriveUploader.encrypt",
                     recipientEmail = recipient.email,
@@ -159,13 +176,9 @@ class DriveUploader(private val context: Context) {
                     recipientTrustLayerKey = effectiveKey.trustLayerPublicKey,
                     recipientPubKeyUsedForECIES = recipientPublicKeyHex,
                     signerPath = PATH_DERIVED,
-                    signerPubKeyUsed = myPubDerived,
-                    senderParamInserted = myPubDerived
+                    signerPubKeyUsed = signerPublicKeyHex,
+                    senderParamInserted = signerPublicKeyHex
                 )
-
-                // ✅ Swift互換: 署名は derivedKey(/1) を使う（sender= も同じ鍵にする）
-                val signingPrivateKeyHex = myPrivDerived
-                val signerPublicKeyHex = myPubDerived
 
                 // Swift版互換: nameMeta(Base64(JSON)) も同時に生成してメールURLに付与する
                 val secure = SecurePackage.createWithNameMeta(

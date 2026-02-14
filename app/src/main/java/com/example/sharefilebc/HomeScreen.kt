@@ -239,7 +239,7 @@ fun HomeScreen(
                                 val senderTrustLayerPublicKey = myKeyEntity?.trustLayerPublicKey
                                 val senderDerivedPublicKey = myKeyEntity?.derivedPublicKey
 
-                                if (senderTrustLayerPublicKey != null) {
+                                if (senderDerivedPublicKey != null) {
                                     val walletManager = WalletManager.getInstance(context)
                                     val ws = WalletSettingsManager.getInstance(context)
 
@@ -329,7 +329,7 @@ fun HomeScreen(
                                             fileName = fileName,
                                             folderId = folderId,
                                             fileId = fileId,
-                                            senderPublicKeyHex = senderTrustLayerPublicKey,
+                                            senderPublicKeyHex = senderDerivedPublicKey,
                                             threshold = threshold,
                                             senderAddress = refundAddress,
                                             uuid = uuid,
@@ -346,7 +346,7 @@ fun HomeScreen(
                                 } else {
                                     Toast.makeText(
                                         context,
-                                        "送信者の公開鍵を取得できませんでした",
+                                        "送信者の公開鍵（署名用/derived）を取得できませんでした",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }

@@ -1,6 +1,7 @@
 package com.example.sharefilebc.crypto
 
 import com.example.sharefilebc.crypto.HexUtils.toHexString
+import com.example.sharefilebc.crypto.HexUtils.hexToByteArray
 import org.bouncycastle.crypto.digests.RIPEMD160Digest
 import org.bouncycastle.jce.ECNamedCurveTable
 import java.math.BigInteger
@@ -27,6 +28,18 @@ object PublicKeyUtils {
         val extKey = KeyDerivation.decodeExtendedPrivateKey(xprv)
         val pubKey = compressedPublicKeyFromPrivate(extKey.key)
         return pubKey.toHexString()
+    }
+
+    /**
+     * 32byte の秘密鍵 Hex から、圧縮公開鍵 Hex（33byte）を生成する。
+     *
+     * 目的:
+     * - 「署名に使った秘密鍵」と「リンク/メタデータに埋め込んだ公開鍵」が
+     *   本当に対応しているかを、送信側(Android)だけで確定できるようにする。
+     */
+    fun compressedPublicKeyHexFromPrivateKeyHex(privateKeyHex: String): String {
+        val d = BigInteger(1, privateKeyHex.trim().hexToByteArray())
+        return compressedPublicKeyFromPrivate(d).toHexString()
     }
 
     internal fun compressedPublicKeyFromPrivate(privateKey: BigInteger): ByteArray {

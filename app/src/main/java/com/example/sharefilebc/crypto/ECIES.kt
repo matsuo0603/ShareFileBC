@@ -14,7 +14,6 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
-import javax.crypto.KeyAgreement
 
 /**
  * ECIES (secp256k1) による AES 鍵のカプセル化
@@ -56,23 +55,34 @@ object ECIES {
         val ephPrivateKey = ephemeralKeyPair.private
         val ephPublicKey = ephemeralKeyPair.public as ECPublicKey
 
-        // 3. ECDH 共有秘密（Swift互換の sharedSecretBytes）
-        //    ※Swift(P256K) 側は「ECDH共有秘密(32byte)」を返し、そこへSHA-256を1回だけ当ててGCM鍵にしている。
-        //      Android側が sharedSecret 側でもSHAしてしまうと、Swiftと derivedKey が一致せず
-        //      keyCipher の復号で AEADBadTagException(mac check in GCM failed) になる。
-        val sharedSecret = generateSharedSecretBytes(ephPrivateKey, recipientPublicKey)
+        // 3. ECDH 共有秘密（iOS/Swift(P256K) 互換）
+        // ✅ 実ログで確定：Swift 側の ECIES.encrypt/decrypt の derivedKey は
+        //   「共有点(Q*d) を圧縮公開鍵(33byte)にしたもの」を SHA-256 した値に一致する。
+        //   Android 側が X座標32byte を使う方式だと、iOS 側で AES-GCM が authenticationFailure になる。
+        //   そのため Android→iOS の暗号化では v2(compressed shared point) を採用する。
+        val sharedSecretV2 = generateSharedSecretBytesCompressedPoint(ephPrivateKey, recipientPublicKey) // 33bytes
+        val derivedKeyV2 = sha256(sharedSecretV2)
 
-        // 4. sharedSecret → SHA-256 → 派生 AES 鍵（SHAはここで1回だけ）
-        val derivedKey = sha256(sharedSecret)
+        // 参考ログ用：過去互換・切り分けのため候補も算出（利用はしない）
+        val sharedSecretV1 = generateSharedSecretBytesX32(ephPrivateKey, recipientPublicKey) // 32bytes
+        val derivedKeyV1 = sha256(sharedSecretV1)
+        val sharedSecretLegacy = generateSharedSecretBytesLegacy(ephPrivateKey, recipientPublicKey)
+        val derivedKeyLegacy = sha256(sharedSecretLegacy)
 
         // 5. 派生 AES 鍵で aesKey を AES-GCM 暗号化
-        val enc = AESGCMCrypto.encrypt(aesKey, derivedKey)
+        val enc = AESGCMCrypto.encrypt(aesKey, derivedKeyV2)
 
         Log.d(TAG, "🔁 ECIES encrypt recipientPubKey: $recipientPublicKeyHex")
         val ephemeralCompressed = ephPublicKey.q.getEncoded(true)
         Log.d(TAG, "🔁 ECIES encrypt ephemeralPubKey: ${ephemeralCompressed.toHexString()}")
-        Log.d(TAG, "🔁 ECIES encrypt sharedSecretHash: ${
-            android.util.Base64.encodeToString(derivedKey, android.util.Base64.NO_WRAP)
+        Log.d(TAG, "🔁 ECIES encrypt sharedSecretHash(v2-compressed): ${
+            android.util.Base64.encodeToString(derivedKeyV2, android.util.Base64.NO_WRAP)
+        }")
+        Log.d(TAG, "🔁 ECIES encrypt sharedSecretHash(v1-x32): ${
+            android.util.Base64.encodeToString(derivedKeyV1, android.util.Base64.NO_WRAP)
+        }")
+        Log.d(TAG, "🔁 ECIES encrypt sharedSecretHash(legacy): ${
+            android.util.Base64.encodeToString(derivedKeyLegacy, android.util.Base64.NO_WRAP)
         }")
         Log.d(TAG, "🔁 ECIES encrypt nonce: ${
             android.util.Base64.encodeToString(enc.nonce, android.util.Base64.NO_WRAP)
@@ -111,13 +121,13 @@ object ECIES {
         // 2. エフェメラル公開鍵 byte[] → PublicKey（圧縮33B）
         val ephemeralPublicKey = createECPublicKeyFromEncoded(result.ephemeralPublicKey)
 
-        // 3. ECDH 共有秘密（Swift互換の sharedSecretBytes）
-        //    互換性のため、まずは「共有秘密32byte(x座標)」→SHA-256(1回) を試し、
-        //    それでGCMタグ不一致になる場合のみ「旧方式」(x||y を SHA-256 してからさらにSHA) をフォールバックする。
-        val sharedSecretV2 = generateSharedSecretBytes(recipientPrivateKey, ephemeralPublicKey)
+        // 3. ECDH 共有秘密
+        // ✅ 実ログで確定：Swift(P256K) の derivedKey は v2(compressed shared point) が一致する。
+        //    そのため復号は v2 を第一候補にする（旧 Android 互換として v1/legacy も残す）。
+        val sharedSecretV2 = generateSharedSecretBytesCompressedPoint(recipientPrivateKey, ephemeralPublicKey) // 33bytes
         val derivedKeyV2 = sha256(sharedSecretV2)
 
-        val sharedSecretV1 = generateSharedSecretBytesX32(recipientPrivateKey, ephemeralPublicKey)
+        val sharedSecretV1 = generateSharedSecretBytesX32(recipientPrivateKey, ephemeralPublicKey) // 32bytes
         val derivedKeyV1 = sha256(sharedSecretV1)
 
         val fingerprint = sha256(privKeyBytes)
@@ -133,7 +143,7 @@ object ECIES {
             android.util.Base64.encodeToString(derivedKeyV1, android.util.Base64.NO_WRAP)
         }")
 
-        // 5. 派生 AES 鍵で AES 鍵を復号（まずは v1）
+        // 5. 派生 AES 鍵で AES 鍵を復号（まずは v2 = Swift互換）
         val aesKey = try {
             AESGCMCrypto.decrypt(
                 ciphertext = result.encryptedAESKey,
@@ -142,9 +152,8 @@ object ECIES {
                 key = derivedKeyV2
             )
         } catch (e: Exception) {
-            // v2(P256K互換=compressed shared point) で失敗した場合は、
-            // 過去に Android 側だけで作ってしまった方式(v1=x32) を試す。
-            Log.w(TAG, "⚠️ ECIES decrypt v2(p256k) failed -> try v1(x32)", e)
+            // v2(compressed) で失敗した場合は、v1(x32) を試す。
+            Log.w(TAG, "⚠️ ECIES decrypt v2(compressed) failed -> try v1(x32)", e)
 
             val aesKeyV1 = runCatching {
                 AESGCMCrypto.decrypt(
@@ -162,7 +171,7 @@ object ECIES {
                 // それでもダメなら、さらに古い「legacy」(SHA256(x||y) を sharedSecretBytes とみなしてもう一度SHA) を試す
                 val sharedSecretLegacy = generateSharedSecretBytesLegacy(recipientPrivateKey, ephemeralPublicKey)
                 val derivedKeyLegacy = sha256(sharedSecretLegacy)
-                Log.w(TAG, "⚠️ ECIES decrypt v1(x32) failed -> fallback to legacy")
+                Log.w(TAG, "⚠️ ECIES decrypt v2(compressed) failed -> fallback to legacy")
                 Log.d(TAG, "🔁 ECIES decrypt sharedSecretHash(legacy): ${
                     android.util.Base64.encodeToString(derivedKeyLegacy, android.util.Base64.NO_WRAP)
                 }")
@@ -173,7 +182,6 @@ object ECIES {
                     key = derivedKeyLegacy
                 )
             }
-
         }
 
         Log.d(TAG, "🔁 ECIES decrypt recoveredAESKey: ${
@@ -218,23 +226,17 @@ object ECIES {
     }
 
     /**
-     * Swift(P256K) と互換にするための sharedSecretBytes。
+     * iOS/Swift(P256K) 互換の sharedSecretBytes。
      *
-     * - secp256k1 ECDH の共有点(Q*d) を計算
-     * - x座標(32byte) を big-endian で返す
-     *
-     * Swift側は、この 32byte に対して SHA-256 を1回だけ当てて derivedKey(AES-GCM鍵) にしている。
+     * ✅ 実ログで確定：Swift 側の ECIES は、ECDH の共有点(Q*d) を
+     * 「圧縮公開鍵(33byte)」にしたバイト列を sharedSecretBytes とみなし、
+     * それを SHA-256 して derivedKey(AES-GCM鍵) にしている。
      */
-    private fun generateSharedSecretBytes(
+    private fun generateSharedSecretBytesCompressedPoint(
         privateKey: java.security.PrivateKey,
         publicKey: java.security.PublicKey
     ): ByteArray {
-        // ✅ Swift(P256K) 互換:
-        //   P256K.KeyAgreement.sharedSecretFromKeyAgreement(with:) の withUnsafeBytes { Data($0) }
-        //   は「共有点(Q*d) の圧縮形式 (33byte)」を返している。
-        //   その 33byte に対して SHA-256 を 1回だけ当てたものが AES-GCM の鍵になる。
-        //
-        // したがって Android も、共有点を計算して「圧縮公開鍵(33byte)」を sharedSecretBytes とする。
+        // 共有点(Q*d) を計算して compressed(33B) を返す
         val bcPriv = privateKey as? ECPrivateKey
             ?: throw IllegalArgumentException("privateKey is not BC ECPrivateKey")
         val bcPub = publicKey as? ECPublicKey
@@ -245,23 +247,26 @@ object ECIES {
         return point.getEncoded(true)
     }
 
+
     /**
-     * 互換用（旧実装）:
-     * - KeyAgreement(ECDH).generateSecret() が返す「x座標(32byte big-endian)」を sharedSecretBytes とみなす方式。
-     * - Swift 側とは一致しないが、過去に Android 側だけで暗号化したデータ救済のため残す。
+     * 旧方式(v1): 共有点(Q*d) の X 座標(32byte big-endian) を返す。
+     *
+     * 以前の Android 実装や、一部の実装ではこの値を sharedSecretBytes として
+     * SHA-256 → derivedKey にする場合があるため、受信側の復号互換として残す。
      */
     private fun generateSharedSecretBytesX32(
         privateKey: java.security.PrivateKey,
         publicKey: java.security.PublicKey
     ): ByteArray {
-        val provider = BouncyCastleInitializer.ensure()
-        val ka = KeyAgreement.getInstance("ECDH", provider)
-        ka.init(privateKey)
-        ka.doPhase(publicKey, true)
-        val secret = ka.generateSecret()
-        return normalizeSecret32(secret)
-    }
+        val bcPriv = privateKey as? ECPrivateKey
+            ?: throw IllegalArgumentException("privateKey is not BC ECPrivateKey")
+        val bcPub = publicKey as? ECPublicKey
+            ?: throw IllegalArgumentException("publicKey is not BC ECPublicKey")
 
+        val point = bcPub.q.multiply(bcPriv.d).normalize()
+        val x = point.affineXCoord.toBigInteger()
+        return toFixed32(x)
+    }
     private fun normalizeSecret32(secret: ByteArray): ByteArray {
         // generateSecret() の戻りは provider/実装で長さがブレることがある。
         // 互換のため「右詰め32byte」（足りない分は0埋め）に揃える。
