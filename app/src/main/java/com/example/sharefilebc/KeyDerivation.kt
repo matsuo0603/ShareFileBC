@@ -27,13 +27,22 @@ class KeyDerivation private constructor(context: Context) {
     companion object {
         private const val TAG = "TapyrusWalletManager"
         // ✅ Swift版と同じ「固定パスで鍵を確定」する。
-        // - derivedKey: 暗号化(ECIES)で相手に渡す公開鍵 / 受信側の復号で使う秘密鍵
-        // - trustLayerKey: トラストレイヤ用（別用途）
-        const val DERIVED_KEY_PATH = "m/44'/0'/0'/0/1"
+        // iOS 実装/論文仕様では、暗号化(ECIES)・署名・公開鍵交換に使う基準鍵は
+        //   m/44'/0'/0'/0/0
+        // に固定されている。
+        //
+        // Android 側が /0/1 を derivedKey として配布してしまうと、
+        // 受信側(iOS)が「送信者の derivedPublicKey」として保存する鍵と、
+        // 実際に SecurePackage を署名した鍵(/0/0)が不一致になり、
+        // 署名検証で失敗してダウンロードできなくなる。
+        //
+        // したがって Android 側も derivedKey を /0/0 に固定する。
         const val TRUST_LAYER_PATH = "m/44'/0'/0'/0/0"
+        const val DERIVED_KEY_PATH = TRUST_LAYER_PATH
 
-        // 互換のための既存引数: 省略時は derivedKey を指す
-        private const val DEFAULT_PATH = DERIVED_KEY_PATH
+        // ✅ iOS版は暗号化/署名/公開鍵交換の基準を m/44'/0'/0'/0/0 に固定している。
+        // Android側も同じに揃える。
+        private const val DEFAULT_PATH = TRUST_LAYER_PATH
 
         @Volatile
         private var instance: com.example.sharefilebc.KeyDerivation? = null
@@ -60,7 +69,7 @@ class KeyDerivation private constructor(context: Context) {
      * 現在の受取アドレスを返す。
      *
      * Swift版の `currentAddress` に対応するイメージ。
-     * 今は常に m/44'/0'/0'/0/1 のアドレス 1つだけを使う。
+     * 今は常に m/44'/0'/0'/0/0 のアドレス 1つだけを使う。
      */
     fun getCurrentAddress(): String {
         // 1. 子 xprv を取得
