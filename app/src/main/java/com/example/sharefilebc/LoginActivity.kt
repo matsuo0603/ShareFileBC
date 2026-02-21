@@ -12,16 +12,34 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.example.sharefilebc.ui.theme.ShareFileBCTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -53,6 +71,9 @@ class LoginActivity : ComponentActivity() {
     private var senderAddressFromHomeActivity: String? = null
     private var thresholdFromHomeActivity: String? = null
 
+    private var shouldAutoProceed: Boolean = false
+    private var cachedDisplayName: String = "ログインユーザー"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -81,7 +102,6 @@ class LoginActivity : ComponentActivity() {
         Log.d(TAG, "onCreate: Deep Link received: $deepLinkUriFromHomeActivity")
         Log.d(TAG, "onCreate: folderId received: $folderIdFromHomeActivity")
 
-        // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         val already = GoogleSignIn.getLastSignedInAccount(this)
         val hasRequiredScopes = already?.let {
             GoogleSignIn.hasPermissions(
@@ -90,54 +110,131 @@ class LoginActivity : ComponentActivity() {
                 Scope(GmailScopes.GMAIL_SEND)
             )
         } ?: false
+
+        // ✅ iOS版の挙動に合わせる
+        // - 既にログイン済み（必要なscopeもある）なら「アイコンだけ表示」→ 即 Home へ
+        // - 未ログインなら「アイコン + Googleでログイン」を表示
+        shouldAutoProceed = (already != null && hasRequiredScopes)
+        cachedDisplayName = already?.displayName ?: "ログインユーザー"
+
+        // Deep Link経由で来ていて、未ログイン or Drive権限なしなら自動でサインイン開始
         if (deepLinkUriFromHomeActivity != null && (already == null || !hasRequiredScopes)) {
             launcher.launch(googleSignInClient.signInIntent)
         }
 
-        setContent { ShareFileBCTheme { LoginScreen() } }
+        setContent {
+            // ✅ iOS版トップ画面は白背景前提なので、ここは常にライトで固定
+            ShareFileBCTheme(darkTheme = false) {
+                LoginScreen(
+                    isLoggedIn = shouldAutoProceed,
+                    onLoginClick = {
+                        // ✅ ここで signOut しないと、以前のトークン/scope が残って Drive が 401/403 になることがある
+                        googleSignInClient.signOut().addOnCompleteListener {
+                            launcher.launch(googleSignInClient.signInIntent)
+                        }
+                    },
+                    onAutoProceed = {
+                        startHome(displayName = cachedDisplayName)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun startHome(displayName: String) {
+        val intent = Intent(this, HomeActivity::class.java).apply {
+            putExtra("displayName", displayName)
+            deepLinkUriFromHomeActivity?.let { data = it }
+            folderIdFromHomeActivity?.let { putExtra("folderId", it) }
+            fileIdFromHomeActivity?.let { putExtra("fileId", it) }
+            senderPublicKeyFromHomeActivity?.let { putExtra("senderPublicKey", it) }
+            recipientEmailFromHomeActivity?.let { putExtra("recipientEmail", it) }
+            senderAddressFromHomeActivity?.let { putExtra("senderAddress", it) }
+            thresholdFromHomeActivity?.let { putExtra("threshold", it) }
+        }
+        startActivity(intent)
+        finish()
     }
 
     @OptIn(ExperimentalComposeUiApi::class)
     @Composable
-    private fun LoginScreen() {
+    private fun LoginScreen(
+        isLoggedIn: Boolean,
+        onLoginClick: () -> Unit,
+        onAutoProceed: () -> Unit
+    ) {
         var pressed by remember { mutableStateOf(false) }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+        LaunchedEffect(isLoggedIn) {
+            if (isLoggedIn) {
+                // iOS版と同様：ログイン済みならトップ画面（アイコンのみ）を見せて即遷移
+                onAutoProceed()
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color.White
         ) {
-            Text(text = "ShareFileBC", style = MaterialTheme.typography.headlineMedium)
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Image(
-                painter = painterResource(id = R.drawable.btn_google_signin),
-                contentDescription = "Google Sign In",
+            Column(
                 modifier = Modifier
-                    .width(250.dp)
-                    .pointerInteropFilter {
-                        when (it.action) {
-                            MotionEvent.ACTION_DOWN -> pressed = true
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> pressed = false
-                        }
-                        false
-                    }
-                    .alpha(if (pressed) 0.7f else 1f)
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() }
+                    .fillMaxSize()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // ✅ iOS版 TopPage と同じ見た目（Assets.xcassets の TopPage）
+                Image(
+                    painter = painterResource(id = R.drawable.top_page),
+                    contentDescription = "ShareFileBC Icon",
+                    modifier = Modifier.size(120.dp)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "ShareFileBC",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.Black
+                )
+
+                if (!isLoggedIn) {
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .pointerInteropFilter {
+                                when (it.action) {
+                                    MotionEvent.ACTION_DOWN -> pressed = true
+                                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> pressed = false
+                                }
+                                false
+                            }
+                            .alpha(if (pressed) 0.7f else 1f)
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) { onLoginClick() }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // ✅ ここで signOut/revokeAccess しないと、
-                        // 以前のトークンや scope が残って Drive のアップロードが 401/403 で失敗することがある。
-                        // WorkManager のバックグラウンド処理は「ログイン後に」成立させる方針に切り替える。
-                        googleSignInClient.signOut().addOnCompleteListener {
-                            launcher.launch(googleSignInClient.signInIntent)
-                        }
+                        Image(
+                            painter = painterResource(id = R.drawable.google_icon),
+                            contentDescription = "Google",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Googleでログイン",
+                            // iOSの青 (0xFF0A84FF) に寄せる
+                            color = Color(0xFF0A84FF),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
-            )
+                }
+            }
         }
     }
 
@@ -171,18 +268,7 @@ class LoginActivity : ComponentActivity() {
                 }
             }
 
-            val intent = Intent(this, HomeActivity::class.java).apply {
-                putExtra("displayName", displayName)
-                deepLinkUriFromHomeActivity?.let { data = it }
-                folderIdFromHomeActivity?.let { putExtra("folderId", it) }
-                fileIdFromHomeActivity?.let { putExtra("fileId", it) }
-                senderPublicKeyFromHomeActivity?.let { putExtra("senderPublicKey", it) }
-                recipientEmailFromHomeActivity?.let { putExtra("recipientEmail", it) }
-                senderAddressFromHomeActivity?.let { putExtra("senderAddress", it) }
-                thresholdFromHomeActivity?.let { putExtra("threshold", it) }
-            }
-            startActivity(intent)
-            finish()
+            startHome(displayName = displayName)
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Googleサインイン失敗: ${e.message}", e)
