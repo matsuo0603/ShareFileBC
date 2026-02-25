@@ -13,7 +13,14 @@ object PublicKeyLinkBuilder {
     private const val BASE_URL = "https://sharefilebcapp.web.app"
 
     fun build(email: String, derivedPublicKey: String, trustLayerPublicKey: String, folderId: String): String {
-        val encodedSegments = listOf(email, derivedPublicKey, trustLayerPublicKey, folderId)
+        // iOS側は trustLayerPublicKey を文字列一致で突合するため、
+        // 大文字小文字の揺れで一致しない事故を防ぐ（Androidは小文字で統一）。
+        val encodedSegments = listOf(
+            email,
+            derivedPublicKey.lowercase(),
+            trustLayerPublicKey.lowercase(),
+            folderId
+        )
             .joinToString("/") { Uri.encode(it) }
         return "$BASE_URL/pubkey/$encodedSegments"
     }

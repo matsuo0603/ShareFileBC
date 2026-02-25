@@ -94,8 +94,8 @@ class DriveUploader(private val context: Context) {
 
                 // --- KEY SNAPSHOT (切り分け用) ---
                 // 仕様:
-                // - derivedKey(/1): ECIES(暗号化) 用
-                // - trustLayerKey(/0): 署名(ECDSA) 用
+                // - derivedKey(/1): ECIES(暗号化) / 署名(ECDSA) 用
+                // - trustLayerKey(/0): sender識別 / P2C(送金・返金) 用
                 val PATH_DERIVED = KeyDerivation.DERIVED_KEY_PATH
                 val PATH_TRUST = KeyDerivation.TRUST_LAYER_PATH
 
@@ -148,23 +148,21 @@ class DriveUploader(private val context: Context) {
                 Log.d("DriveUploader", "📧 recipient=${recipient.email} name=${recipient.name}")
 
                 // ✅ 役割整合性ログ（推測ではなく、実際に使った値を確定させる）
-                // - ECIES(暗号化) に使った相手鍵: recipientPublicKeyHex
-                // - 署名に使う自分の鍵: trustLayerKey(/0)
-                //   ※ iOS側の processReceivedShare は URL の sender(= TrustLayer公開鍵) を起点に
-                //      ファイル名メタデータ(nameMeta)の署名検証を行うため、署名鍵と sender を一致させる必要がある。
-                // - メールURLの sender= に入れる鍵: signerPublicKeyHex（= 署名鍵と一致させる）
-                val signingPrivateKeyHex = myPrivTrust
-                // ✅ 絶対に「署名に使う秘密鍵」から公開鍵を導出して sender= と一致させる
-                // これがズレると iOS は署名検証が100%失敗する
+                // - ECIES(暗号化) に使った相手鍵: recipientPublicKeyHex（相手の derived）
+                // - 署名に使う自分の鍵: derivedKey(/1)
+                // - メールURLの sender= に入れる鍵: TrustLayer 公開鍵(/0)（sender 識別子）
+                //   ※ 受信側は sender(TrustLayer) をキーに EmailKey を検索し、derivedPublicKey を署名検証鍵として使う。
+                val signingPrivateKeyHex = myPrivDerived
+                // ✅ 署名用公開鍵は「署名に使う秘密鍵」から導出して確定
                 val signerPublicKeyHex = PublicKeyUtils.compressedPublicKeyHexFromPrivateKeyHex(signingPrivateKeyHex)
 
-                if (!signerPublicKeyHex.equals(myPubTrust, ignoreCase = true)) {
+                if (!signerPublicKeyHex.equals(myPubDerived, ignoreCase = true)) {
                     Log.e(
                         "DriveUploader",
-                        "🚨 SIGNER_KEY_MISMATCH: pubDerivedFromPriv != wallet.getCurrentPublicKeyHex(TRUST_LAYER)\n" +
+                        "🚨 SIGNER_KEY_MISMATCH: pubDerivedFromPriv != wallet.getCurrentPublicKeyHex(DERIVED)\n" +
                                 "  pubFromPriv=$signerPublicKeyHex\n" +
-                                "  pubFromWallet=$myPubTrust\n" +
-                                "  (Android側の鍵導出/保存が壊れている可能性あり。sender= は pubFromPriv を採用)"
+                                "  pubFromWallet=$myPubDerived\n" +
+                                "  (Android側の鍵導出/保存が壊れている可能性あり。署名鍵は pubFromPriv を採用)"
                     )
                 }
 
@@ -174,9 +172,9 @@ class DriveUploader(private val context: Context) {
                     recipientDerivedKey = effectiveKey.derivedPublicKey,
                     recipientTrustLayerKey = effectiveKey.trustLayerPublicKey,
                     recipientPubKeyUsedForECIES = recipientPublicKeyHex,
-                    signerPath = PATH_TRUST,
+                    signerPath = PATH_DERIVED,
                     signerPubKeyUsed = signerPublicKeyHex,
-                    senderParamInserted = signerPublicKeyHex
+                    senderParamInserted = myPubTrust
                 )
 
                 // Swift版互換: nameMeta(Base64(JSON)) も同時に生成してメールURLに付与する

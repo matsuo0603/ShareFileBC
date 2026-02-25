@@ -97,12 +97,17 @@ object EmailSender {
     ) {
         val subject = "ファイル共有: $fileName"
 
+        // iOS側のUIは senderPublicKey / trustLayerPublicKey を「完全一致(大文字小文字を区別)」で突合する箇所があるため、
+        // 送信する sender / pubkey 登録値を **小文字に正規化**して安定させる。
+        // ここで正規化しても暗号処理そのもの（hex->bytes）は意味が変わらない。
+        val senderKeyNormalized = senderPublicKeyHex?.lowercase()
+
         // 旧仕様のフォルダ直リンク（常に用意しておく）
         val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
         // --- KEY ROLE DEBUG (送信側) ---
         // sender= に入れる公開鍵が、どのパスの鍵かをログで確定させる
-        if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+        if (fileId != null && senderKeyNormalized != null && uuid != null && txid != null) {
             runCatching {
                 val kd = KeyDerivation.getInstance(context)
                 val PATH0 = KeyDerivation.TRUST_LAYER_PATH
@@ -120,7 +125,7 @@ object EmailSender {
                     pub1 = myPub1,
                     priv1Hex = myPriv1
                 )
-                Log.d(TAG, "[KEY_ROLE][SEND] senderParam(full)=$senderPublicKeyHex matchPub0=${senderPublicKeyHex.equals(myPub0, true)} matchPub1=${senderPublicKeyHex.equals(myPub1, true)}")
+                Log.d(TAG, "[KEY_ROLE][SEND] senderParam(full)=$senderKeyNormalized matchPub0=${senderKeyNormalized.equals(myPub0, true)} matchPub1=${senderKeyNormalized.equals(myPub1, true)}")
             }.onFailure {
                 Log.w(TAG, "[KEY_ROLE][SEND] snapshot failed: ${it.message}")
             }
@@ -128,13 +133,13 @@ object EmailSender {
 
         // ✅ 新仕様のときだけ、Driveのdescriptionに shareメタを保存（自動受信用）
         // 失敗してもメール送信は続行する（絶対に壊さない）
-        if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+        if (fileId != null && senderKeyNormalized != null && uuid != null && txid != null) {
             // Swift版に合わせて、受信側で必要な最小限のメタだけ保存する
             val descQuery = buildString {
                 append("uuid=").append(Uri.encode(uuid))
                 append("&refund=").append(Uri.encode(senderAddress ?: ""))
                 append("&txid=").append(Uri.encode(txid))
-                append("&sender=").append(Uri.encode(senderPublicKeyHex))
+                append("&sender=").append(Uri.encode(senderKeyNormalized))
                 nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
             }
 
@@ -144,14 +149,14 @@ object EmailSender {
         }
 
         val body = buildString {
-            if (fileId != null && senderPublicKeyHex != null && uuid != null && txid != null) {
+            if (fileId != null && senderKeyNormalized != null && uuid != null && txid != null) {
                 // ✅ 新仕様：https（青リンクになりやすい）
                 val shareUrlHttps = buildString {
                     append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}?")
                     append("uuid=").append(Uri.encode(uuid))
                     senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                     append("&txid=").append(Uri.encode(txid))
-                    append("&sender=").append(Uri.encode(senderPublicKeyHex))
+                    append("&sender=").append(Uri.encode(senderKeyNormalized))
                     nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
                 }
 
@@ -162,8 +167,18 @@ object EmailSender {
                     append("&uuid=").append(Uri.encode(uuid))
                     senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                     append("&txid=").append(Uri.encode(txid))
-                    append("&sender=").append(Uri.encode(senderPublicKeyHex))
+                    append("&sender=").append(Uri.encode(senderKeyNormalized))
                     nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
+                }
+
+                // ✅ iOS側で processReceivedShare が走らない原因切り分け用
+                // iOS(ContentView) は「uuid && txid(1つ以上) && sender」が揃った時だけ processReceivedShare を呼ぶ。
+                // メールクライアントのURL短縮/改行/省略で txid/sender が欠落すると、
+                // ダウンロードは出来ても返金ボタンが出ない（= refundContextsBySender が作られない）状態になり得る。
+                Log.d(TAG, "[SHARE_URL] httpsLen=${shareUrlHttps.length} appLen=${shareUrlApp.length}")
+                Log.d(TAG, "[SHARE_URL] uuid=$uuid txid=$txid sender(head)=${senderKeyNormalized.take(16)} refundPresent=${!senderAddress.isNullOrBlank()} nameMetaLen=${nameMetaBase64?.length ?: 0}")
+                if (uuid.isBlank() || txid.isBlank() || senderKeyNormalized.isBlank()) {
+                    Log.w(TAG, "[SHARE_URL][WARN] missing required params: uuidBlank=${uuid.isBlank()} txidBlank=${txid.isBlank()} senderBlank=${senderKeyNormalized.isBlank()}")
                 }
 
                 appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")

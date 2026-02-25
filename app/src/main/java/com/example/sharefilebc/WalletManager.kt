@@ -285,8 +285,8 @@ class WalletManager private constructor(
         val dao = db.myPublicKeyDao()
 
         val kd = com.example.sharefilebc.KeyDerivation.getInstance(context)
-        val trustLayerPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.TRUST_LAYER_PATH)
-        val derivedPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.DERIVED_KEY_PATH)
+        val trustLayerPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.TRUST_LAYER_PATH).lowercase()
+        val derivedPublicKey = kd.getCurrentPublicKeyHex(com.example.sharefilebc.KeyDerivation.DERIVED_KEY_PATH).lowercase()
 
         val existing = dao.getPrimary()
         val needsUpsert = existing == null || existing.trustLayerPublicKey.isNullOrBlank() || existing.derivedPublicKey.isNullOrBlank()

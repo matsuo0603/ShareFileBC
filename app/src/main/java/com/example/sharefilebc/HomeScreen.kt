@@ -244,7 +244,10 @@ fun HomeScreen(
                                     val ws = WalletSettingsManager.getInstance(context)
 
                                     scope.launch {
-                                        val uuid = java.util.UUID.randomUUID().toString()
+                                        // ✅ iOS(Swift)側との互換性を上げるため、UUIDは大文字表記に統一する
+                                        // - iOS→iOS で使われている shareID 表記に合わせる
+                                        // - P2Cアドレス生成・URLクエリ・DB保存で同じ文字列を必ず使う
+                                        val uuid = java.util.UUID.randomUUID().toString().uppercase()
                                         val transferAmount = ws.getTokenTransferAmount()
                                         val threshold = ws.getPaymentThreshold()
 

@@ -43,15 +43,16 @@ class DriveDownloader(private val context: Context) {
     private val expirationMillis: Long = 7L * 24 * 60 * 60 * 1000
 
     /**
-     * 鍵の用途とパスの整理：
+     * 鍵の用途とパスの整理（仕様反映版）：
      *
      * 【暗号化・復号】
-     * - 送信側: 受信者の /1 公開鍵で AES鍵を暗号化（ECIES）
-     * - 受信側: 自分の /1 秘密鍵で AES鍵を復号（ECIES）
+     * - 送信側: 受信者の derived 公開鍵(/1) で AES鍵を暗号化（ECIES）
+     * - 受信側: 自分の derived 秘密鍵(/1) で AES鍵を復号（ECIES）
      *
      * 【署名・検証】
-     * - 送信側: 自分の /0 秘密鍵で署名（ECDSA）
-     * - 受信側: 送信者の /0 公開鍵で署名検証（ECDSA）
+     * - 送信側: 自分の derived 秘密鍵(/1) で署名（ECDSA）
+     * - 受信側: sender(TrustLayer公開鍵) をキーに EmailKey を検索し、対応する derived 公開鍵で署名検証（ECDSA）
+     *   （未登録なら sender(TrustLayer) をそのまま検証鍵として試す）
      */
     // ✅ iOS(Swift) の BIP32 派生鍵 (Constants.Strings.bip32Path) と合わせる
     // Swift 側では xprv から m/44'/0'/0'/0/0 を導出して ECIES 復号に使っている。

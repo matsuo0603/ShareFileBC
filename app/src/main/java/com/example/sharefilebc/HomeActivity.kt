@@ -62,14 +62,16 @@ class HomeActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Wallet init（UIはブロックしない）
-        lifecycleScope.launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             runCatching {
                 val walletManager = WalletManager.getInstance(this@HomeActivity)
                 walletManager.initializeIfNeeded()
                 Log.d(TAG, "✅ WalletManager initialized successfully")
             }.onFailure { e ->
                 Log.e(TAG, "❌ WalletManager initialization failed", e)
-                Toast.makeText(this@HomeActivity, "ウォレットの初期化に失敗しました", Toast.LENGTH_LONG).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@HomeActivity, "ウォレットの初期化に失敗しました", Toast.LENGTH_LONG).show()
+                }
             }
         }
 
@@ -108,7 +110,7 @@ class HomeActivity : ComponentActivity() {
 
         // 初期トークン配布申請
         account.email?.let { email ->
-            lifecycleScope.launch {
+            lifecycleScope.launch(Dispatchers.IO) {
                 runCatching {
                     val wm = WalletManager.getInstance(applicationContext)
                     wm.initializeIfNeeded()
@@ -132,13 +134,13 @@ class HomeActivity : ComponentActivity() {
 
         // 公開鍵レジストリ登録（自分）
         account.email?.let { email ->
-            lifecycleScope.launch {
+            lifecycleScope.launch(Dispatchers.IO) {
                 runCatching {
                     val wm = WalletManager.getInstance(applicationContext)
                     wm.initializeIfNeeded()
                     val (_, publicKeyHex) = wm.getNewAddressWithPublicKey()
                     val api = PublicKeyApiClient()
-                    val result = withContext(Dispatchers.IO) { api.registerMyPublicKey(email, publicKeyHex) }
+                    val result = api.registerMyPublicKey(email, publicKeyHex)
                     result.onSuccess {
                         Log.d(TAG, "🟢 公開鍵を公開鍵レジストリに登録しました (${email})")
                     }.onFailure { e ->
@@ -181,7 +183,7 @@ class HomeActivity : ComponentActivity() {
                 LaunchedEffect(selectedTab) {
                     if (selectedTab != BottomTab.Shared) return@LaunchedEffect
 
-                    composeScope.launch {
+                    composeScope.launch(Dispatchers.IO) {
                         runCatching {
                             IncomingFilesSyncer.syncOnce(applicationContext)
                         }.onFailure { e ->

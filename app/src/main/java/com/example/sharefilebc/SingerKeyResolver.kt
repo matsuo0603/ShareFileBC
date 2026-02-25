@@ -5,24 +5,24 @@ import android.util.Log
 import com.example.sharefilebc.data.AppDatabase
 
 /**
- * ✅ Swift版互換のための「署名検証用公開鍵」解決器。
+ * ✅ 署名検証用公開鍵の解決器（仕様反映版）。
  *
- * Swift 側は以下が起こり得る：
- * - SecurePackage.create の signingPrivateKeyHex が「派生鍵（derived）」
- * - しかし共有リンクの sender= が「TrustLayer鍵」になっている（または逆）
- *
- * その結果、Android が sender= の公開鍵だけで verify すると signature verify failed になる。
- *
- * そこで、senderParam（リンクの sender=）に加えて、DB(email_keys) に保存してある
- * derived/trust のペアを使い、検証候補鍵を複数提示する。
+ * 【仕様】
+ * - 共有URLの sender= には「TrustLayer 公開鍵」を載せる（sender 識別子）。
+ * - nameMeta / vpfs の署名検証は「派生公開鍵（derived）」で行う（暗号処理の本体側）。
+ * - そのため受信時のみ、sender(TrustLayer) -> derivedPublicKey へのマッピングが必要。
+ * - 未登録の場合のみフォールバックで sender(TrustLayer) をそのまま検証鍵として試す。
  */
 object SignerKeyResolver {
     private const val TAG = "SignerKeyResolver"
 
     /**
-     * senderParamPubKeyHex から「検証候補の公開鍵」を優先順で返す。
-     * - まず senderParam を先頭
-     * - senderParam が email_keys の derived/trust のどちらかに一致する場合、もう片方も候補に追加
+     * senderParamPubKeyHex（= TrustLayer 公開鍵）から「署名検証候補の公開鍵」を優先順で返す。
+     *
+     * 優先順:
+     *  1) EmailKey(trustLayerPublicKey == senderParam) の derivedPublicKey
+     *  2) （senderEmail が分かる場合のみ）EmailKey(email) の derivedPublicKey
+     *  3) senderParam 自体（未登録時のフォールバック）
      */
     suspend fun resolveCandidates(
         context: Context,
@@ -34,40 +34,32 @@ object SignerKeyResolver {
 
         val db = AppDatabase.getDatabase(context)
 
-        val entry = runCatching {
-            when {
-                !senderEmailOrNull.isNullOrBlank() -> db.emailKeyDao().findByEmail(senderEmailOrNull.trim())
-                else -> db.emailKeyDao().findByAnyPublicKey(senderParam)
-            }
+        // 仕様通り: senderParam(TrustLayer) で逆引きして derived を得る
+        val byTrust = runCatching {
+            db.emailKeyDao().findByTrustLayerPublicKey(senderParam)
         }.getOrNull()
 
-        val derived = entry?.derivedPublicKey?.trim().orEmpty()
-        val trust = entry?.trustLayerPublicKey?.trim().orEmpty()
+        // 送信者メールが分かるときだけ、メールでも補助的に探す（sender と不整合な場合の救済）
+        val byEmail = if (!senderEmailOrNull.isNullOrBlank()) {
+            runCatching { db.emailKeyDao().findByEmail(senderEmailOrNull.trim()) }.getOrNull()
+        } else null
 
         val candidates = linkedSetOf<String>()
+
+        val derivedFromTrust = byTrust?.derivedPublicKey?.trim().orEmpty()
+        if (derivedFromTrust.isNotBlank()) candidates.add(derivedFromTrust)
+
+        val derivedFromEmail = byEmail?.derivedPublicKey?.trim().orEmpty()
+        if (derivedFromEmail.isNotBlank()) candidates.add(derivedFromEmail)
+
+        // 最後に senderParam 自体（未登録フォールバック）
         candidates.add(senderParam)
 
-        // senderParam と「同一人物の別鍵」を候補に追加
-        if (derived.isNotBlank() && !derived.equals(senderParam, ignoreCase = true)) {
-            // senderParam が trust なら derived を、senderParam が derived なら trust を優先して追加
-            if (trust.isNotBlank() && trust.equals(senderParam, ignoreCase = true)) {
-                candidates.add(derived)
-            }
-        }
-        if (trust.isNotBlank() && !trust.equals(senderParam, ignoreCase = true)) {
-            if (derived.isNotBlank() && derived.equals(senderParam, ignoreCase = true)) {
-                candidates.add(trust)
-            }
-        }
-
-        // senderParam がどちらとも一致しない場合でも、「同一メールの両方」を追加（senderEmail 指定時）
-        if (!senderEmailOrNull.isNullOrBlank()) {
-            if (derived.isNotBlank()) candidates.add(derived)
-            if (trust.isNotBlank()) candidates.add(trust)
-        }
-
         val out = candidates.toList()
-        Log.d(TAG, "resolveCandidates senderParam=${senderParam.take(16)}... email=${senderEmailOrNull ?: "(none)"} -> ${out.map { it.take(16) + "..." }}")
+        Log.d(
+            TAG,
+            "resolveCandidates sender(TrustLayer)=${senderParam.take(16)}... email=${senderEmailOrNull ?: "(none)"} -> ${out.map { it.take(16) + "..." }}"
+        )
         return out
     }
 }

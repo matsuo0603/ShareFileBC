@@ -96,7 +96,11 @@ class KeyDerivation private constructor(context: Context) {
      */
     fun getCurrentPublicKeyHex(path: String = DEFAULT_PATH): String {
         val childXprv = getChildXprvForPath(path)
-        val compressedPubKeyHex = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv)
+        // iOS側は senderPublicKey / trustLayerPublicKey を **文字列一致(大文字小文字を区別)** で突合する箇所がある。
+        // Android側は実装・端末によって hex の大小文字が揺れる可能性があるため、ここで **大文字に正規化**して返す。
+        // - 暗号処理自体は hex の大小で意味が変わらない
+        // - UI(返金ボタン表示)や EmailKey マッピングの一致判定は文字列一致なので、正規化が安全。
+        val compressedPubKeyHex = PublicKeyUtils.compressedPublicKeyHexFromXprv(childXprv).lowercase()
         Log.d(
             TAG,
             "currentPublicKeyHex(path=$path) = $compressedPubKeyHex (masterFp=${masterFp()})"
@@ -117,12 +121,13 @@ class KeyDerivation private constructor(context: Context) {
     fun getCurrentPrivateKeyHex(path: String = DEFAULT_PATH): String {
         val childXprv = getChildXprvForPath(path)
         val privKeyBytes = extractRawPrivateKeyFromXprv(childXprv)
-        val privKeyHex = privKeyBytes.toHexString()
+        // こちらもログ/比較の安定性のために大文字で返す（暗号処理は bytes を使うので影響なし）
+        val privKeyHex = privKeyBytes.toHexString().lowercase()
 
         // 切り分け用：この秘密鍵に対応する圧縮公開鍵を計算して出す
         val pubFromPrivHex = runCatching {
             val privInt = java.math.BigInteger(1, privKeyBytes)
-            PublicKeyUtils.compressedPublicKeyFromPrivate(privInt).toHexString()
+            PublicKeyUtils.compressedPublicKeyFromPrivate(privInt).toHexString().lowercase()
         }.getOrElse { "(failed)" }
 
         Log.d(
