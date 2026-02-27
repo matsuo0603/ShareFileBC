@@ -249,6 +249,44 @@ private fun buildSentGroups(
     // name -> email
     val nameToEmail: Map<String, String> = users.associate { it.name to it.email }
 
+    // JSTで Date にする（yyyy-MM-dd / yyyy-MM-dd HH:mm / yyyy-MM-dd HH:mm:ss を許容）
+    fun parseJSTFlexible(dateTimeString: String): java.util.Date? {
+        val s = dateTimeString.trim()
+        if (s.isBlank()) return null
+        val tz = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+        val patterns = listOf("yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd")
+        for (p in patterns) {
+            try {
+                val f = java.text.SimpleDateFormat(p, java.util.Locale.getDefault())
+                f.timeZone = tz
+                return f.parse(s)
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    fun formatJST(date: java.util.Date): String {
+        val f = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+        f.timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+        return f.format(date)
+    }
+
+    fun plus7Days(date: java.util.Date): java.util.Date {
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Tokyo"))
+        cal.time = date
+        cal.add(java.util.Calendar.DAY_OF_YEAR, 7)
+        return cal.time
+    }
+
+    fun computeDeleteAt(uploadedAt: String, deleteDateTime: String): String {
+        // DBに deleteDateTime が入っていればそれを正に使う
+        val delete = parseJSTFlexible(deleteDateTime)
+            ?: parseJSTFlexible(uploadedAt)?.let { plus7Days(it) }
+
+        return delete?.let { formatJST(it) } ?: ""
+    }
+
     val grouped: Map<String, List<SharedFolderEntity>> = sharedFolders.groupBy { it.recipientName }
 
     return grouped.entries.map { (recipientName, folders) ->
@@ -261,8 +299,8 @@ private fun buildSentGroups(
                 SentFileItemUi(
                     id = f.id,
                     fileName = f.fileName,
-                    uploadedAt = f.date,            // yyyy-MM-dd（DBがこの形式前提）
-                    deleteAt = f.deleteDateTime     // 空の可能性あり
+                    uploadedAt = f.date, // yyyy-MM-dd or yyyy-MM-dd HH:mm
+                    deleteAt = computeDeleteAt(f.date, f.deleteDateTime)
                 )
             }
 
@@ -273,6 +311,7 @@ private fun buildSentGroups(
         )
     }.sortedBy { it.recipientName }
 }
+
 
 /** この画面用の最小UIモデル（新規ファイルは作らない） */
 private data class SentFileGroupUi(

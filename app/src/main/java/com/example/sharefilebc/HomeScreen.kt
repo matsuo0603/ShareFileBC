@@ -154,6 +154,10 @@ fun HomeScreen(
     var addEmail by remember { mutableStateOf("") }
     var registrationSnackbarMessage by remember { mutableStateOf<String?>(null) }
 
+    // ===== 共有相手削除の確認ダイアログ =====
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var pendingDeleteUser by remember { mutableStateOf<UserEntity?>(null) }
+
     val snackbarHostState = remember { SnackbarHostState() }
 
     // ===== 切り分け用：Home表示直後の即同期を一旦無効化 =====
@@ -539,10 +543,8 @@ fun HomeScreen(
                         user = user,
                         hasRegisteredKey = hasRegisteredKey,
                         onDelete = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { userDao.deleteByName(user.name) }
-                                snackbarHostState.showSnackbar("削除しました")
-                            }
+                            pendingDeleteUser = user
+                            showDeleteConfirm = true
                         },
                         onShare = {
                             scope.launch {
@@ -605,6 +607,65 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // ===== 共有相手削除 確認ダイアログ（iOS風） =====
+    if (showDeleteConfirm) {
+        val target = pendingDeleteUser
+        AlertDialog(
+            onDismissRequest = {
+                showDeleteConfirm = false
+                pendingDeleteUser = null
+            },
+            title = {
+                Text(
+                    text = "この共有相手を削除しますか？",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "この操作は元に戻せません。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        pendingDeleteUser = null
+                    }
+                ) {
+                    Text("キャンセル")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val u = target ?: return@TextButton
+                        showDeleteConfirm = false
+                        pendingDeleteUser = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                // email ではなく name で削除している（既存仕様を維持）
+                                userDao.deleteByName(u.name)
+                            }
+                            snackbarHostState.showSnackbar("削除しました")
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = Color(0xFFD32F2F)
+                    )
+                ) {
+                    Text("削除")
+                }
+            },
+            shape = RoundedCornerShape(28.dp),
+            containerColor = Color.White,
+            tonalElevation = 6.dp
+        )
     }
 
     // ===== 残高オーバーレイ（お手本のUI）=====

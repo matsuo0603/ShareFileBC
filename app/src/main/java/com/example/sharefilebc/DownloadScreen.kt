@@ -522,6 +522,7 @@ fun DownloadScreen(
     }
 }
 
+
 private fun buildSenderSummaries(
     receivedFolders: List<ReceivedFolderEntity>,
     receivedFiles: List<ReceivedFileEntity>,
@@ -529,7 +530,82 @@ private fun buildSenderSummaries(
     refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
     blockedSenders: List<com.example.sharefilebc.data.BlockedSenderEntity>
 ): List<ReceivedSenderSummaryUi> {
-    val emailMap = users.associate { it.name to it.email }
+
+    fun extractEmail(raw: String): String? {
+        val trimmed = raw.trim()
+        // 例: "Name <user@example.com>"
+        Regex("<\\s*([^>\\s]+@[^>\\s]+)\\s*>").find(trimmed)?.groupValues?.getOrNull(1)?.let { return it }
+        // 例: "mailto:user@example.com"
+        if (trimmed.startsWith("mailto:", ignoreCase = true)) {
+            val s = trimmed.removePrefix("mailto:").trim()
+            if (s.contains("@")) return s
+        }
+        // 例: "user@example.com"
+        if (trimmed.contains("@")) {
+            // 文字列に余計なものが混ざっている場合もあるので、メールっぽい部分を抽出
+            Regex("([A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,})")
+                .find(trimmed)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { return it }
+        }
+        return null
+    }
+
+    fun normalizeEmailKey(emailRaw: String): String {
+        val e = emailRaw.trim().lowercase()
+        val parts = e.split("@")
+        if (parts.size != 2) return e
+        var local = parts[0]
+        var domain = parts[1]
+
+        // Google系は表記ゆれを吸収（. / +tag / googlemail.com）
+        val isGmail = domain == "gmail.com" || domain == "googlemail.com"
+        if (isGmail) {
+            domain = "gmail.com"
+            local = local.substringBefore("+")
+            local = local.replace(".", "")
+        }
+        return "$local@$domain"
+    }
+
+    // senderName が "dev.ymatsuo" のようにローカル部だけで保存されているケースを救済する
+    // Gmail系は local の "." と "+tag" を無視する（Gmailの実仕様に合わせる）
+    fun normalizeLocalPartKey(emailOrLocalRaw: String): String {
+        val s = emailOrLocalRaw.trim().lowercase()
+        val local = s.substringBefore("@").substringBefore("+")
+        // senderName がローカル部のみで来るケースに合わせて、ドメイン有無に関係なく "." は落とす
+        //（Gmail以外では '.' が意味を持つ可能性があるが、今回の要件は Gmail 互換優先）
+        return local.replace(".", "")
+    }
+
+    // users: 公開鍵登録(共有相手登録)で保存した「名前 ↔ email」を参照する
+    // ✅ 表記ゆれ（Gmailの . / +tag、Name<email> など）を吸収したキーで引く
+    val userByEmailKey: Map<String, UserEntity> = users
+        .mapNotNull { u ->
+            val em = extractEmail(u.email) ?: u.email
+            em.takeIf { it.contains("@") }?.let { normalizeEmailKey(it) to u }
+        }
+        .toMap()
+
+    // ローカル部（例: dev.ymatsuo / devymatsuo）→ User
+    // 同一ローカルに複数が当たる場合は先勝ち（衝突はレア前提）
+    val userByLocalKey: Map<String, UserEntity> = users
+        .asSequence()
+        .mapNotNull { u ->
+            val em = extractEmail(u.email) ?: u.email
+            em.takeIf { it.contains("@") }?.let { normalizeLocalPartKey(it) to u }
+        }
+        .distinctBy { it.first }
+        .toMap()
+
+    // 名前 → email（登録した「相手名」からも引けるようにする）
+    val emailKeyByName: Map<String, String> = users
+        .mapNotNull { u ->
+            val em = extractEmail(u.email) ?: u.email
+            em.takeIf { it.contains("@") }?.let { u.name to normalizeEmailKey(it) }
+        }
+        .toMap()
 
     // received_files を参照できるように index を作る
     val receivedByFileId = receivedFiles
@@ -540,7 +616,11 @@ private fun buildSenderSummaries(
         .toMap()
 
     // blocked_senders は email が主キー
-    val blockedEmailSet = blockedSenders.map { it.email }.toSet()
+    val blockedEmailKeySet: Set<String> = blockedSenders
+        .mapNotNull { extractEmail(it.email) ?: it.email }
+        .filter { it.contains("@") }
+        .map { normalizeEmailKey(it) }
+        .toSet()
 
     fun isRefundEligible(task: com.example.sharefilebc.data.RefundTaskEntity): Boolean {
         if ((task.status ?: "PENDING") != "PENDING") return false
@@ -563,9 +643,44 @@ private fun buildSenderSummaries(
         .mapNotNull { it.relatedFolderId }
         .toSet()
 
+    data class SenderResolved(
+        val groupKey: String,          // 同一人物にまとめるキー（emailKey があれば emailKey、無ければ raw）
+        val displayName: String,       // UIに出す名前（emailKey が一致すれば登録名）
+        val emailRaw: String?          // email（抽出できるなら生の形で保持）
+    )
+
+    fun resolveSender(rawSender: String): SenderResolved {
+        val raw = rawSender.trim()
+
+        // DBの senderName が「メールアドレス」や「Name <email>」で入ってしまっているケースを救済する
+        val extractedEmail = extractEmail(raw)
+        val emailKey = when {
+            extractedEmail != null -> normalizeEmailKey(extractedEmail)
+            else -> emailKeyByName[raw]
+        }
+
+        // 1) emailKey で一致（通常）
+        // 2) senderName がローカル部だけなら、ローカル部キーで一致（例: dev.ymatsuo -> devymatsuo）
+        val display = when {
+            emailKey != null && userByEmailKey[emailKey] != null -> userByEmailKey[emailKey]!!.name
+            extractedEmail == null -> userByLocalKey[normalizeLocalPartKey(raw)]?.name ?: raw
+            else -> raw
+        }
+
+        return SenderResolved(
+            groupKey = emailKey ?: raw,
+            displayName = display,
+            emailRaw = extractedEmail ?: (emailKey?.let { userByEmailKey[it]?.email })
+        )
+    }
+
+    val resolved = receivedFolders.associate { it.id to resolveSender(it.senderName) }
+
     return receivedFolders
-        .groupBy { it.senderName }
-        .map { (senderName, folders) ->
+        .groupBy { folder -> resolved[folder.id]?.groupKey ?: folder.senderName }
+        .map { (_, folders) ->
+            val r0 = resolved[folders.first().id] ?: resolveSender(folders.first().senderName)
+
             val dateGroups = folders
                 .groupBy { it.folderName }
                 .map { (dateName, rows) ->
@@ -593,13 +708,14 @@ private fun buildSenderSummaries(
 
             val latestUpload = dateGroups.firstOrNull()?.displayUpload ?: ""
 
-            val senderEmail = emailMap[senderName]
-            val isBlocked = senderEmail != null && blockedEmailSet.contains(senderEmail)
+            val senderEmailKey = r0.emailRaw?.let { extractEmail(it) }?.let { normalizeEmailKey(it) }
+            val isBlocked = senderEmailKey != null && blockedEmailKeySet.contains(senderEmailKey)
+
             val hasPendingRefund = folders.any { pendingRefundFolderIds.contains(it.folderId) }
 
             ReceivedSenderSummaryUi(
-                senderName = senderName,
-                senderEmail = senderEmail,
+                senderName = r0.displayName,
+                senderEmail = r0.emailRaw,
                 dateGroups = dateGroups,
                 cacheToken = cacheToken,
                 latestUpload = latestUpload,
@@ -609,6 +725,7 @@ private fun buildSenderSummaries(
         }
         .sortedByDescending { it.latestUpload }
 }
+
 @Composable
 private fun LoginRequiredCard(onLogin: () -> Unit) {
     Column(
