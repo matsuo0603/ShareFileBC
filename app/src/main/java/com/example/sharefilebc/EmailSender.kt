@@ -84,6 +84,8 @@ object EmailSender {
     fun sendEmailWithDriveLink(
         context: Context,
         recipientEmail: String,
+        /** iOS版の件名に合わせるため、共有相手の名前（任意） */
+        recipientName: String? = null,
         fileName: String,
         folderId: String,
         fileId: String? = null,
@@ -95,14 +97,17 @@ object EmailSender {
         /** Swift版互換: URLクエリに付ける nameMeta(Base64(JSON)) */
         nameMetaBase64: String? = null
     ) {
-        val subject = "ファイル共有: $fileName"
+        // ✅ iOS版に合わせる: "◯◯さんへのファイル共有"
+        // ※名前が取れない場合はフォールバック
+        val subject = recipientName?.takeIf { it.isNotBlank() }?.let { "${it}さんへのファイル共有" }
+            ?: "ファイル共有"
 
         // iOS側のUIは senderPublicKey / trustLayerPublicKey を「完全一致(大文字小文字を区別)」で突合する箇所があるため、
         // 送信する sender / pubkey 登録値を **小文字に正規化**して安定させる。
         // ここで正規化しても暗号処理そのもの（hex->bytes）は意味が変わらない。
         val senderKeyNormalized = senderPublicKeyHex?.lowercase()
 
-        // 旧仕様のフォルダ直リンク（常に用意しておく）
+        // 旧仕様のフォルダ直リンク（最低限のフォールバックとして保持）
         val fallbackFolderLink = "https://sharefilebcapp.web.app/folder/${Uri.encode(folderId)}"
 
         // --- KEY ROLE DEBUG (送信側) ---
@@ -148,55 +153,31 @@ object EmailSender {
             }
         }
 
+        // ✅ iOS版に合わせる: 本文はシンプルに「ファイル共有リンク」とURLのみ
         val body = buildString {
             if (fileId != null && senderKeyNormalized != null && uuid != null && txid != null) {
-                // ✅ 新仕様：https（青リンクになりやすい）
                 val shareUrlHttps = buildString {
-                    append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}?")
+                    append("https://sharefilebcapp.web.app/file/${Uri.encode(fileId)}")
+                    append("?")
                     append("uuid=").append(Uri.encode(uuid))
                     senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
                     append("&txid=").append(Uri.encode(txid))
                     append("&sender=").append(Uri.encode(senderKeyNormalized))
+                    // iOS版: filename をクエリに付けている
+                    append("&filename=").append(Uri.encode(fileName))
+                    // Android拡張: nameMeta がある場合は併記（復号・互換のため。受信側が無視しても問題ない）
                     nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
                 }
 
-                // ✅ 新仕様：カスタムスキーム（App Linksが効かない端末/状況のための保険）
-                val shareUrlApp = buildString {
-                    append("sharefilebc://download?")
-                    append("fileId=").append(Uri.encode(fileId))
-                    append("&uuid=").append(Uri.encode(uuid))
-                    senderAddress?.let { append("&refund=").append(Uri.encode(it)) }
-                    append("&txid=").append(Uri.encode(txid))
-                    append("&sender=").append(Uri.encode(senderKeyNormalized))
-                    nameMetaBase64?.let { append("&nameMeta=").append(Uri.encode(it)) }
-                }
+                Log.d(TAG, "[SHARE_URL] httpsLen=${shareUrlHttps.length}")
+                Log.d(TAG, "[SHARE_URL] uuid=$uuid txid=$txid sender(head)=${senderKeyNormalized.take(16)} refundPresent=${!senderAddress.isNullOrBlank()} filenameLen=${fileName.length} nameMetaLen=${nameMetaBase64?.length ?: 0}")
 
-                // ✅ iOS側で processReceivedShare が走らない原因切り分け用
-                // iOS(ContentView) は「uuid && txid(1つ以上) && sender」が揃った時だけ processReceivedShare を呼ぶ。
-                // メールクライアントのURL短縮/改行/省略で txid/sender が欠落すると、
-                // ダウンロードは出来ても返金ボタンが出ない（= refundContextsBySender が作られない）状態になり得る。
-                Log.d(TAG, "[SHARE_URL] httpsLen=${shareUrlHttps.length} appLen=${shareUrlApp.length}")
-                Log.d(TAG, "[SHARE_URL] uuid=$uuid txid=$txid sender(head)=${senderKeyNormalized.take(16)} refundPresent=${!senderAddress.isNullOrBlank()} nameMetaLen=${nameMetaBase64?.length ?: 0}")
-                if (uuid.isBlank() || txid.isBlank() || senderKeyNormalized.isBlank()) {
-                    Log.w(TAG, "[SHARE_URL][WARN] missing required params: uuidBlank=${uuid.isBlank()} txidBlank=${txid.isBlank()} senderBlank=${senderKeyNormalized.isBlank()}")
-                }
-
-                appendLine("以下のリンクをタップすると、公開鍵登録とダウンロード準備が自動で行われます。")
-                appendLine()
-                appendLine("【通常リンク（https）】")
-                appendLine(shareUrlHttps)
-                appendLine()
-                appendLine("もし上のリンクでアプリが起動しない場合は、次のリンクをタップしてください（アプリ起動用）：")
-                appendLine()
-                appendLine("【アプリ起動リンク】")
-                appendLine(shareUrlApp)
-                appendLine()
-                appendLine("ブラウザのみでアクセスしたい場合は、次のフォルダリンクを利用できます：")
-                appendLine(fallbackFolderLink)
+                append("ファイル共有リンク\n\n")
+                append(shareUrlHttps)
             } else {
                 // ✅ 旧仕様：フォルダへの直接リンクのみ
-                appendLine("以下のリンクから共有フォルダにアクセスできます。")
-                appendLine(fallbackFolderLink)
+                append("ファイル共有リンク\n\n")
+                append(fallbackFolderLink)
             }
         }
 

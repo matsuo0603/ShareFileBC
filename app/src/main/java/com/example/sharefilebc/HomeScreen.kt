@@ -143,6 +143,8 @@ fun HomeScreen(
     var users by remember { mutableStateOf(listOf<UserEntity>()) }
     var emailKeys by remember { mutableStateOf(listOf<EmailKeyEntity>()) }
     var isUploading by remember { mutableStateOf(false) }
+    // 共有処理中に表示するメッセージ（iOS版の体感に合わせて、トークン送金完了まで表示を維持する）
+    var uploadingMessage by remember { mutableStateOf("ファイルを共有中...") }
     var isRegistering by remember { mutableStateOf(false) }
     var showAccountScreen by remember { mutableStateOf(false) }
     var tokenThreshold by remember { mutableStateOf(walletSettingsManager.getPaymentThreshold().toLong().toInt()) }
@@ -217,169 +219,170 @@ fun HomeScreen(
 
             scope.launch {
                 isUploading = true
-                withContext(Dispatchers.IO) {
-                    val result = driveUploader.uploadFileAndRecordWithSharing(
-                        fileUri = uri,
-                        recipient = target,
-                        recipientKey = recipientKey,
-                        db = db
-                    )
-                    withContext(Dispatchers.Main) {
-                        isUploading = false
-                        when (result) {
-                            is UploadResult.Success -> {
-                                val fileName = result.fileName
-                                val fileId = result.fileId
-                                val folderId = result.folderId
-                                val nameMetaBase64 = result.nameMetaBase64
-                                val myKeyEntity = withContext(Dispatchers.IO) {
-                                    db.myPublicKeyDao().getPrimary()
-                                }
+                uploadingMessage = "ファイルを共有中..."
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        driveUploader.uploadFileAndRecordWithSharing(
+                            fileUri = uri,
+                            recipient = target,
+                            recipientKey = recipientKey,
+                            db = db
+                        )
+                    }
 
-                                val senderTrustLayerPublicKey = myKeyEntity?.trustLayerPublicKey
-                                val senderDerivedPublicKey = myKeyEntity?.derivedPublicKey
+                    when (result) {
+                        is UploadResult.Success -> {
+                            val fileName = result.fileName
+                            val fileId = result.fileId
+                            val folderId = result.folderId
+                            val nameMetaBase64 = result.nameMetaBase64
+                            val myKeyEntity = withContext(Dispatchers.IO) { db.myPublicKeyDao().getPrimary() }
+                            val senderTrustLayerPublicKey = myKeyEntity?.trustLayerPublicKey
 
-                                if (senderTrustLayerPublicKey != null) {
-                                    val walletManager = WalletManager.getInstance(context)
-                                    val ws = WalletSettingsManager.getInstance(context)
-
-                                    scope.launch {
-                                        // ✅ iOS(Swift)側との互換性を上げるため、UUIDは大文字表記に統一する
-                                        // - iOS→iOS で使われている shareID 表記に合わせる
-                                        // - P2Cアドレス生成・URLクエリ・DB保存で同じ文字列を必ず使う
-                                        val uuid = java.util.UUID.randomUUID().toString().uppercase()
-                                        val transferAmount = ws.getTokenTransferAmount()
-                                        val threshold = ws.getPaymentThreshold()
-
-                                        val refundAddress = withContext(Dispatchers.IO) {
-                                            runCatching {
-                                                walletManager.getNewAddressWithPublicKey(
-                                                    colorId = Constants.Strings.tokenColorId
-                                                ).first
-                                            }.getOrNull()
-                                        }
-
-                                        if (refundAddress == null) {
-                                            Toast.makeText(
-                                                context,
-                                                "返金用アドレスの生成に失敗しました",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            return@launch
-                                        }
-
-                                        val p2cAddress = withContext(Dispatchers.IO) {
-                                            runCatching {
-                                                walletManager.generateP2CAddress(
-                                                    publicKey = recipientKey.trustLayerPublicKey,
-                                                    contract = uuid,
-                                                    colorId = Constants.Strings.tokenColorId
-                                                )
-                                            }.getOrNull()
-                                        }
-
-                                        if (p2cAddress == null) {
-                                            Toast.makeText(
-                                                context,
-                                                "P2Cアドレスの生成に失敗しました",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            return@launch
-                                        }
-
-                                        val txid = withContext(Dispatchers.IO) {
-                                            runCatching {
-                                                walletManager.transferToken(
-                                                    toAddress = p2cAddress,
-                                                    amount = transferAmount,
-                                                    colorId = Constants.Strings.tokenColorId,
-                                                    utxos = emptyList()   // ←必要なら後でUTXOを渡す
-                                                )
-                                            }.getOrNull()
-                                        }
-
-                                        if (txid == null) {
-                                            Toast.makeText(
-                                                context,
-                                                "トークン送金に失敗しました",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            return@launch
-                                        }
-
-                                        withContext(Dispatchers.IO) {
-                                            runCatching { walletManager.sync() }
-                                                .onFailure { Log.w("HomeScreen", "⚠️ Wallet sync failed", it) }
-                                        }
-
-                                        withContext(Dispatchers.IO) {
-                                            sentShareDao.insert(
-                                                SentShareEntity(
-                                                    fileId = fileId,
-                                                    folderId = folderId,
-                                                    recipientEmail = target.email,
-                                                    createdAt = nowIsoString(),
-                                                    threshold = threshold.toLong(),
-                                                    senderAddress = refundAddress,
-                                                    status = "PAID"
-                                                )
-                                            )
-                                        }
-
-                                        EmailSender.sendEmailWithDriveLink(
-                                            context = context,
-                                            recipientEmail = target.email,
-                                            fileName = fileName,
-                                            folderId = folderId,
-                                            fileId = fileId,
-                                            senderPublicKeyHex = senderTrustLayerPublicKey,
-                                            threshold = threshold,
-                                            senderAddress = refundAddress,
-                                            uuid = uuid,
-                                            txid = txid,
-                                            nameMetaBase64 = nameMetaBase64
-                                        )
-
-                                        Toast.makeText(
-                                            context,
-                                            "ファイル共有とトークン送金が完了しました",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                } else {
-                                    Toast.makeText(
-                                        context,
-                                        "送信者の公開鍵（TrustLayer）を取得できませんでした",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
-
-                            is UploadResult.MissingRecipientPublicKey -> {
-                                val link = result.registrationLink
-                                val snackbarResult = snackbarHostState.showSnackbar(
-                                    message = "相手の公開鍵がまだ登録されていません",
-                                    actionLabel = link?.let { "メール送信" }
-                                )
-                                if (snackbarResult == SnackbarResult.ActionPerformed && link != null) {
-                                    EmailSender.sendPublicKeyRegistrationEmail(
-                                        context = context,
-                                        recipientEmail = target.email,
-                                        registrationUrl = link,
-                                        senderEmail = accountEmail
-                                    )
-                                }
-                            }
-
-                            is UploadResult.Failure -> {
+                            if (senderTrustLayerPublicKey == null) {
                                 Toast.makeText(
                                     context,
-                                    "アップロードに失敗しました（Google認証を確認）",
+                                    "送信者の公開鍵（TrustLayer）を取得できませんでした",
                                     Toast.LENGTH_LONG
                                 ).show()
+                                return@launch
+                            }
+
+                            val walletManager = WalletManager.getInstance(context)
+                            val ws = WalletSettingsManager.getInstance(context)
+
+                            // ✅ iOS(Swift)側との互換性を上げるため、UUIDは大文字表記に統一する
+                            // - iOS→iOS で使われている shareID 表記に合わせる
+                            // - P2Cアドレス生成・URLクエリ・DB保存で同じ文字列を必ず使う
+                            val uuid = java.util.UUID.randomUUID().toString().uppercase()
+                            val transferAmount = ws.getTokenTransferAmount()
+                            val threshold = ws.getPaymentThreshold()
+
+                            uploadingMessage = "ファイルを共有中...（トークン送金中）"
+                            val refundAddress = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    walletManager.getNewAddressWithPublicKey(
+                                        colorId = Constants.Strings.tokenColorId
+                                    ).first
+                                }.getOrNull()
+                            }
+
+                            if (refundAddress == null) {
+                                Toast.makeText(
+                                    context,
+                                    "返金用アドレスの生成に失敗しました",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                return@launch
+                            }
+
+                            val p2cAddress = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    walletManager.generateP2CAddress(
+                                        publicKey = recipientKey.trustLayerPublicKey,
+                                        contract = uuid,
+                                        colorId = Constants.Strings.tokenColorId
+                                    )
+                                }.getOrNull()
+                            }
+
+                            if (p2cAddress == null) {
+                                Toast.makeText(
+                                    context,
+                                    "P2Cアドレスの生成に失敗しました",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                return@launch
+                            }
+
+                            val txid = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    walletManager.transferToken(
+                                        toAddress = p2cAddress,
+                                        amount = transferAmount,
+                                        colorId = Constants.Strings.tokenColorId,
+                                        utxos = emptyList()   // ←必要なら後でUTXOを渡す
+                                    )
+                                }.getOrNull()
+                            }
+
+                            if (txid == null) {
+                                Toast.makeText(
+                                    context,
+                                    "トークン送金に失敗しました",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                return@launch
+                            }
+
+                            withContext(Dispatchers.IO) {
+                                runCatching { walletManager.sync() }
+                                    .onFailure { Log.w("HomeScreen", "⚠️ Wallet sync failed", it) }
+                            }
+
+                            withContext(Dispatchers.IO) {
+                                sentShareDao.insert(
+                                    SentShareEntity(
+                                        fileId = fileId,
+                                        folderId = folderId,
+                                        recipientEmail = target.email,
+                                        createdAt = nowIsoString(),
+                                        threshold = threshold.toLong(),
+                                        senderAddress = refundAddress,
+                                        status = "PAID"
+                                    )
+                                )
+                            }
+
+                            uploadingMessage = "ファイルを共有中...（メール送信中）"
+                            EmailSender.sendEmailWithDriveLink(
+                                context = context,
+                                recipientEmail = target.email,
+                                recipientName = target.name,
+                                fileName = fileName,
+                                folderId = folderId,
+                                fileId = fileId,
+                                senderPublicKeyHex = senderTrustLayerPublicKey,
+                                threshold = threshold,
+                                senderAddress = refundAddress,
+                                uuid = uuid,
+                                txid = txid,
+                                nameMetaBase64 = nameMetaBase64
+                            )
+
+                            Toast.makeText(
+                                context,
+                                "ファイル共有とトークン送金が完了しました",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+
+                        is UploadResult.MissingRecipientPublicKey -> {
+                            val link = result.registrationLink
+                            val snackbarResult = snackbarHostState.showSnackbar(
+                                message = "相手の公開鍵がまだ登録されていません",
+                                actionLabel = link?.let { "メール送信" }
+                            )
+                            if (snackbarResult == SnackbarResult.ActionPerformed && link != null) {
+                                EmailSender.sendPublicKeyRegistrationEmail(
+                                    context = context,
+                                    recipientEmail = target.email,
+                                    registrationUrl = link,
+                                    senderEmail = accountEmail
+                                )
                             }
                         }
+
+                        is UploadResult.Failure -> {
+                            Toast.makeText(
+                                context,
+                                "アップロードに失敗しました（Google認証を確認）",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
+                } finally {
+                    isUploading = false
                 }
             }
             selectedUser = null
@@ -493,7 +496,7 @@ fun HomeScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "アップロード中... Gmailで送信します",
+                    uploadingMessage,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
