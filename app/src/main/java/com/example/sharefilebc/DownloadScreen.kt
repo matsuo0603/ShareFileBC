@@ -35,6 +35,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import com.example.sharefilebc.data.FolderStructure
 import com.example.sharefilebc.data.ReceivedFolderEntity
+import com.example.sharefilebc.data.ReceivedFileEntity
 import com.example.sharefilebc.data.SharePaymentEntity
 import com.example.sharefilebc.data.UserEntity
 import com.example.sharefilebc.ui.theme.SharedScreenColors
@@ -116,12 +117,14 @@ fun DownloadScreen(
 
     val db = remember { AppDatabase.getDatabase(context) }
     val receivedDao = remember { db.receivedFolderDao() }
+    val receivedFileDao = remember { db.receivedFileDao() }
     val userDao = remember { db.userDao() }
     val sharePaymentDao = remember { db.sharePaymentDao() }
     val refundTaskDao = remember { db.refundTaskDao() }
     val blockedSenderDao = remember { db.blockedSenderDao() }
 
     val receivedFolders by receivedDao.getAll().collectAsState(initial = emptyList())
+    val receivedFiles by receivedFileDao.observeAll().collectAsState(initial = emptyList())
     val users by userDao.getAll().collectAsState(initial = emptyList())
     val refundTasks by refundTaskDao.observeAll().collectAsState(initial = emptyList())
     val blockedSenders by blockedSenderDao.getAll().collectAsState(initial = emptyList())
@@ -160,9 +163,10 @@ fun DownloadScreen(
     val isUnderpaid = paymentRecord?.result == "UNDERPAID"
     val canDownload = !requiresPayment || isPaid
 
-    val senderGroups = remember(receivedFolders, users, refundTasks, blockedSenders) {
+    val senderGroups = remember(receivedFolders, receivedFiles, users, refundTasks, blockedSenders) {
         buildSenderSummaries(
             receivedFolders = receivedFolders,
+            receivedFiles = receivedFiles,
             users = users,
             refundTasks = refundTasks,
             blockedSenders = blockedSenders
@@ -347,7 +351,11 @@ fun DownloadScreen(
                         )
                     )
                     if (fileId.isNotBlank() && result == "PAID") {
-                        downloader.downloadFile(fileId)
+                        val saved = downloader.downloadFile(fileId)
+                        if (saved != null) {
+                            runCatching { receivedFileDao.markDownloadedByFileId(fileId) }
+                                .onFailure { Log.w("DownloadScreen", "markDownloaded failed: ${it.message}") }
+                        }
                     }
                 }
 
@@ -403,6 +411,7 @@ fun DownloadScreen(
                         detail = detailState!!,
                         onBack = { selectedSender = null },
                         refundTasks = refundTasks,
+                        receivedFiles = receivedFiles,
                         onRefundOrDecline = { task, doRefund ->
                             coroutineScope.launch {
                                 val shareId = task.shareID
@@ -486,7 +495,12 @@ fun DownloadScreen(
                             }
                             coroutineScope.launch {
                                 isLoading = true
-                                downloader.downloadFile(fileId)
+                                val saved = downloader.downloadFile(fileId)
+                                if (saved != null) {
+                                    // ✅ ダウンロード完了をDBに反映（返金ボタン表示のトリガー）
+                                    runCatching { receivedFileDao.markDownloadedByFileId(fileId) }
+                                        .onFailure { Log.w("DownloadScreen", "markDownloaded failed: ${it.message}") }
+                                }
                                 isLoading = false
                             }
                         }
@@ -510,19 +524,42 @@ fun DownloadScreen(
 
 private fun buildSenderSummaries(
     receivedFolders: List<ReceivedFolderEntity>,
+    receivedFiles: List<ReceivedFileEntity>,
     users: List<UserEntity>,
     refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
     blockedSenders: List<com.example.sharefilebc.data.BlockedSenderEntity>
 ): List<ReceivedSenderSummaryUi> {
     val emailMap = users.associate { it.name to it.email }
 
+    // received_files を参照できるように index を作る
+    val receivedByFileId = receivedFiles
+        .mapNotNull { rf -> rf.fileID?.takeIf { it.isNotBlank() }?.let { it to rf } }
+        .toMap()
+    val receivedByShareId = receivedFiles
+        .mapNotNull { rf -> rf.shareID?.takeIf { it.isNotBlank() }?.let { it to rf } }
+        .toMap()
+
     // blocked_senders は email が主キー
     val blockedEmailSet = blockedSenders.map { it.email }.toSet()
 
-    // 返金待ち（PENDING）の folderId を集める（relatedFolderId があれば senderName に紐付けできる）
+    fun isRefundEligible(task: com.example.sharefilebc.data.RefundTaskEntity): Boolean {
+        if ((task.status ?: "PENDING") != "PENDING") return false
+
+        val byFile = task.relatedFileId?.takeIf { it.isNotBlank() }?.let { receivedByFileId[it] }
+        val byShare = task.shareID?.takeIf { it.isNotBlank() }?.let { receivedByShareId[it] }
+        val rf = byFile ?: byShare
+
+        // ✅ ファイルが特定できる場合は「ダウンロード完了」まで返金対象にしない
+        if (rf != null) return rf.isDownloaded
+
+        // 旧データ等で紐付けできない場合は、従来互換として表示
+        return true
+    }
+
+    // 返金待ち（PENDING）の folderId を集める（※ ダウンロード済みのみ）
     val pendingRefundFolderIds: Set<String> = refundTasks
         .asSequence()
-        .filter { (it.status ?: "PENDING") == "PENDING" }
+        .filter { isRefundEligible(it) }
         .mapNotNull { it.relatedFolderId }
         .toSet()
 
@@ -673,6 +710,7 @@ private fun ReceivedSenderDetail(
     detail: ReceivedSenderDetailUi,
     onBack: () -> Unit,
     refundTasks: List<com.example.sharefilebc.data.RefundTaskEntity>,
+    receivedFiles: List<ReceivedFileEntity>,
     onRefundOrDecline: (com.example.sharefilebc.data.RefundTaskEntity, Boolean) -> Unit,
     paymentInfo: PaymentInfoUi?,
     isPaying: Boolean,
@@ -680,8 +718,26 @@ private fun ReceivedSenderDetail(
     onPayAndDownload: (() -> Unit)?,
     onDownload: (String) -> Unit
 ) {
-    val pendingRefunds = remember(refundTasks) {
-        refundTasks.filter { (it.status ?: "PENDING") == "PENDING" }
+    val pendingRefunds = remember(refundTasks, receivedFiles) {
+        val receivedByFileId = receivedFiles
+            .mapNotNull { rf -> rf.fileID?.takeIf { it.isNotBlank() }?.let { it to rf } }
+            .toMap()
+        val receivedByShareId = receivedFiles
+            .mapNotNull { rf -> rf.shareID?.takeIf { it.isNotBlank() }?.let { it to rf } }
+            .toMap()
+
+        fun isRefundEligible(task: com.example.sharefilebc.data.RefundTaskEntity): Boolean {
+            if ((task.status ?: "PENDING") != "PENDING") return false
+
+            val byFile = task.relatedFileId?.takeIf { it.isNotBlank() }?.let { receivedByFileId[it] }
+            val byShare = task.shareID?.takeIf { it.isNotBlank() }?.let { receivedByShareId[it] }
+            val rf = byFile ?: byShare
+
+            if (rf != null) return rf.isDownloaded
+            return true
+        }
+
+        refundTasks.filter { isRefundEligible(it) }
     }
 
     var showRefundDialog by remember { mutableStateOf(false) }

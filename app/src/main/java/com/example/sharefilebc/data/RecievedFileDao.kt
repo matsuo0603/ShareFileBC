@@ -54,4 +54,12 @@ interface ReceivedFileDao {
      */
     @Query("SELECT * FROM received_files WHERE fileID = :fileId LIMIT 1")
     suspend fun findByFileId(fileId: String): ReceivedFileEntity?
+
+    // ✅ ダウンロード完了フラグ更新（DownloadScreen から呼ぶ）
+    @Query("UPDATE received_files SET isDownloaded = 1 WHERE fileID = :fileId")
+    suspend fun markDownloadedByFileId(fileId: String)
+
+    // ✅ shareID でも更新できるようにしておく（念のため）
+    @Query("UPDATE received_files SET isDownloaded = 1 WHERE shareID = :shareId")
+    suspend fun markDownloadedByShareId(shareId: String)
 }

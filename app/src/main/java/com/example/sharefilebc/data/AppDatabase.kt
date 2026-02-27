@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SentShareEntity::class,
         SharePaymentEntity::class,
     ],
-    version = 14
+    version = 15
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
@@ -72,13 +72,25 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ received_files に「ダウンロード完了フラグ」を追加
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    ALTER TABLE received_files
+                    ADD COLUMN isDownloaded INTEGER NOT NULL DEFAULT 0
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "app_database"
-                ).addMigrations(MIGRATION_13_14)
+                ).addMigrations(MIGRATION_13_14, MIGRATION_14_15)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -16,4 +16,6 @@ data class ReceivedFileEntity(
     val isDownloadAllowed: Boolean = false,
     val isDownloadBlocked: Boolean = false,
     val isDownloadEverAllowed: Boolean = false,
+    // ✅ ダウンロード完了フラグ（返金ボタン表示のゲートに使う）
+    val isDownloaded: Boolean = false,
 )
