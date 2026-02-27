@@ -55,8 +55,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.sharefilebc.data.AppDatabase
-import com.example.sharefilebc.network.PublicKeyApiClient
-import com.example.sharefilebc.network.TokenSubmitResult
 import com.example.sharefilebc.ui.theme.IosGroupedBG
 import com.example.sharefilebc.ui.theme.ModalOverlay
 import com.example.sharefilebc.ui.theme.PureWhite
@@ -217,18 +215,6 @@ fun AccountScreen(
                 }
 
                 Spacer(Modifier.height(20.dp))
-
-                // ───── ONE-TIME TOKEN ─────
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "ONE-TIME TOKEN",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTokenInput()
-                }
 
                 Spacer(Modifier.height(20.dp))
 
@@ -926,80 +912,6 @@ private fun SectionRow(
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-    }
-}
-
-@Composable
-private fun OutlinedTokenInput() {
-    var tokenValue by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("") }
-    var isSubmitting by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val api = remember { PublicKeyApiClient() }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = accountCardBackground())
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            OutlinedTextField(
-                value = tokenValue,
-                onValueChange = {
-                    tokenValue = it
-                    if (statusMessage.isNotBlank()) {
-                        statusMessage = ""
-                    }
-                },
-                placeholder = { Text("Enter token") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = {
-                    val trimmed = tokenValue.trim()
-                    if (trimmed.isBlank()) return@Button
-
-                    isSubmitting = true
-                    statusMessage = ""
-                    scope.launch {
-                        api.submitOneTimeToken(trimmed)
-                            .onSuccess { result ->
-                                statusMessage = when (result) {
-                                    TokenSubmitResult.Success -> "送信しました"
-                                    TokenSubmitResult.NotFound -> "トークンが存在しません"
-                                    is TokenSubmitResult.Failed -> {
-                                        "送信に失敗しました（HTTP ${result.code}）"
-                                    }
-                                }
-                            }
-                            .onFailure {
-                                statusMessage = "通信に失敗しました"
-                            }
-                        isSubmitting = false
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = tokenValue.isNotBlank() && !isSubmitting,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Submit Token")
-            }
-
-            if (statusMessage.isNotBlank()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = statusMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when {
-                        statusMessage.contains("送信しました") -> Color(0xFF2E7D32)
-                        statusMessage.contains("失敗") -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
         }
     }
 }
