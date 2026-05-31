@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "sharefilebc-52382"
-  }
+  },
+  "targets": {
+    "sharefilebc-52382": {
+      "hosting": {
+        "web": [
+          "sharefilebc-52382"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

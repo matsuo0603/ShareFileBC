@@ -1,77 +1,159 @@
 package com.example.sharefilebc
 
-import android.util.Log
+import android.widget.Toast
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.example.sharefilebc.data.SharedFolderEntity
-import kotlinx.coroutines.launch // launch をインポート
+import com.example.sharefilebc.data.DriveFileInfo
+import com.example.sharefilebc.data.FolderStructure
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * フォルダもファイルも表示する版。
+ * - 先頭に現在のフォルダ名を表示
+ * - フォルダはタップで子フォルダを取得して“中へ”
+ * - 上へ戻るボタン（パンくず1段戻し）
+ * - ファイルはそのまま downloadFile() を実行
+ * - 表示順は「フォルダ → ファイル（削除予定時刻順）」に統一
+ */
 @Composable
-fun FileListScreen(selectedDate: String, allSharedFolders: List<SharedFolderEntity>) {
+fun FileListScreen(folderStructure: FolderStructure) {
     val context = LocalContext.current
-    // 選択された日付に紐づくファイル情報をRoomから直接取得
-    var filesForSelectedDate by remember { mutableStateOf<List<SharedFolderEntity>>(emptyList()) }
     val downloader = remember { DriveDownloader(context) }
-    val coroutineScope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(selectedDate, allSharedFolders) {
-        // allSharedFoldersの中から選択された日付のファイルのみをフィルタリング
-        filesForSelectedDate = allSharedFolders
-            .filter { it.date == selectedDate }
-            .distinctBy { it.fileGoogleDriveId } // ファイルIDで重複を除去
-            .sortedByDescending { it.id } // RoomのIDで新しいものが上に来るようにソート (または、より適切なタイムスタンプフィールドがあればそれを使用)
-        Log.d("FileListScreen", "Files for $selectedDate from Room: ${filesForSelectedDate.size}")
-    }
+    // 階層ナビ用スタック（最初の引数の構造をルートにする）
+    var stack by remember { mutableStateOf(listOf(folderStructure)) }
+    var isLoading by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            "ファイル一覧 ($selectedDate)",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
-        if (filesForSelectedDate.isEmpty()) {
-            Text("この日付に共有されたファイルはありません。")
-        } else {
-            LazyColumn {
-                items(filesForSelectedDate) { fileEntity ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(fileEntity.fileName, style = MaterialTheme.typography.titleMedium) // Roomからファイル名を表示
-                                Spacer(modifier = Modifier.height(4.dp))
-                                // MIMEタイプはSharedFolderEntityにないため、表示できないか、別途取得ロジックが必要
-                                // ここでは、Google Driveから取得する代わりに、簡易的にファイル拡張子などで表示することも可能
-                                // Text(file.mimeType ?: "Unknown Type", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("Shared via ${fileEntity.recipientName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) // 共有相手名を表示
-                            }
-                            Button(onClick = {
-                                coroutineScope.launch {
-                                    downloader.downloadFile(fileEntity.fileGoogleDriveId) // Roomから取得したファイルIDでダウンロード
-                                }
-                            }) {
-                                Text("ダウンロード")
+    val current = stack.last()
+
+    Column(Modifier.fillMaxSize()) {
+        // ヘッダ（パンくず戻る + カレント名）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (stack.size > 1) {
+                Button(
+                    onClick = { stack = stack.dropLast(1) },
+                    modifier = Modifier.padding(end = 12.dp)
+                ) { Text("← 上へ") }
+            }
+            Text(
+                text = "📁 ${current.folderName}",
+                style = MaterialTheme.typography.titleLarge
+            )
+        }
+
+        if (isLoading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@Column
+        }
+
+        if (current.files.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("このフォルダには項目がありません。")
+            }
+            return@Column
+        }
+
+        // 表示用コレクション
+        val folders = remember(current) {
+            current.files.filter { it.isFolder }
+        }
+        // 既存仕様を踏襲してファイルは削除予定時刻順
+        val files = remember(current) { current.files.filter { !it.isFolder }.sortedBy { it.deleteDateTime } }
+
+        LazyColumn(contentPadding = PaddingValues(bottom = 80.dp)) {
+            // === フォルダ一覧 ===
+            items(folders, key = { it.id }) { item ->
+                FileRow(
+                    item = item,
+                    isFolder = true,
+                    onClick = {
+                        scope.launch {
+                            isLoading = true
+                            val child = downloader.getFolderStructure(item.id)
+                            isLoading = false
+                            if (child == null) {
+                                Toast.makeText(
+                                    context,
+                                    "フォルダを開けませんでした。権限またはネットワークをご確認ください。",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                // 1階層深く進む
+                                stack = stack + child
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+                )
+            }
+
+            // === ファイル一覧 ===
+            items(files, key = { it.id }) { item ->
+                FileRow(
+                    item = item,
+                    isFolder = false,
+                    onClick = {
+                        scope.launch {
+                            isLoading = true
+                            val ok = downloader.downloadFile(item.id) != null
+                            isLoading = false
+                            if (!ok) {
+                                Toast.makeText(context, "ダウンロードに失敗しました。", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileRow(
+    item: DriveFileInfo,
+    isFolder: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable { onClick() },
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            val icon = if (isFolder) "📂" else "📄"
+            Text("$icon ${item.name}", style = MaterialTheme.typography.titleMedium)
+
+            // ファイルのみメタ情報を補足表示
+            if (!isFolder) {
+                if (item.senderName.isNotBlank()) {
+                    Text("👤 ${item.senderName}", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (item.uploadDateTime.isNotBlank()) {
+                    Text("⏱ ${item.uploadDateTime}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (item.deleteDateTime.isNotBlank()) {
+                    Text(
+                        "🗑 ${item.deleteDateTime} に削除予定",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             }
         }

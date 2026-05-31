@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- iOS ダークモードを参考にした配色 -->
+    <color name="primary">#0A84FF</color>
+    <color name="onPrimary">#000000</color>
+
+    <color name="secondary">#30D158</color>
+    <color name="onSecondary">#000000</color>
+
+    <color name="tertiary">#FF9F0A</color>
+    <color name="onTertiary">#000000</color>
+
+    <!-- 背景と文字色 -->
+    <color name="background">#1C1C1E</color>
+    <color name="onBackground">#FFFFFF</color>
+
+    <color name="surface">#2C2C2E</color>
+    <color name="onSurface">#FFFFFF</color>
+
+    <!-- 区切り線やバリアントカラー -->
+    <color name="outline">#3A3A3C</color>
+    <color name="surfaceVariant">#1F1F21</color>
+    <color name="onSurfaceVariant">#EBEBF5</color>
+
+    <!-- エラー -->
+    <color name="error">#FF453A</color>
+    <color name="onError">#000000</color>
+</resources>

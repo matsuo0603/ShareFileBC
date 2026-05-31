@@ -1,16 +1,22 @@
 {
-  "hosting": {
-    "public": "public",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "/download",
-        "destination": "/index.html"
-      }
-    ]
-  }
+  "hosting": [
+    {
+      "target": "web",
+      "public": "public",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        { "source": "/download", "destination": "/index.html" },
+        { "source": "/download/**", "destination": "/index.html" },
+
+        { "source": "/folder/**", "destination": "/index.html" },
+        { "source": "/file/**", "destination": "/index.html" },
+        { "source": "/share/**", "destination": "/index.html" },
+        { "source": "/pubkey/**", "destination": "/index.html" }
+      ]
+    }
+  ]
 }

@@ -1,7 +1,6 @@
-package com.example.sharefilebc.ui
+package com.example.sharefilebc
 
-enum class BottomTab(val title: String) {
+enum class BottomTab(val label: String) {
     Home("Home"),
-    Download("Download")
+    Shared("Shared"),
 }
-

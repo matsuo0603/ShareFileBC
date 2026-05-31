@@ -1,10 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.example.sharefilebc">
 
-    <!-- ✅ パーミッション -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -23,41 +24,67 @@
         android:theme="@style/Theme.ShareFileBC"
         tools:targetApi="31">
 
-        <!-- ✅ HomeActivity: Deep Link 対応 -->
-        <activity android:name=".HomeActivity" android:exported="true">
+        <activity
+            android:name=".HomeActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
 
-            <!-- 🔷 カスタムスキーム -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="sharefilebc"
-                    android:host="download" />
-            </intent-filter>
-
-            <!-- 🔷 App Links -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="sharefilebc-52382.web.app"
-                    android:pathPrefix="/download" />
-            </intent-filter>
-        </activity>
-
-        <!-- 🔓 Login -->
-        <activity android:name=".LoginActivity" android:exported="true" />
-
-        <!-- 🚀 Launcher -->
-        <activity android:name=".MainActivity" android:exported="true">
+            <!-- Launcher -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- App Links (https) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/download" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/folder" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/share" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/file" />
+                <data android:scheme="https" android:host="sharefilebcapp.web.app" android:pathPrefix="/pubkey" />
+            </intent-filter>
+
+            <!-- Fallback (http) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/download" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/folder" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/share" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/file" />
+                <data android:scheme="http" android:host="sharefilebcapp.web.app" android:pathPrefix="/pubkey" />
+            </intent-filter>
+
+            <!-- Custom scheme compatibility -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sharefilebc" android:host="download" />
+            </intent-filter>
+
+            <!-- Custom scheme (hosting 404 fallback etc.) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="myapp" android:host="open" />
+            </intent-filter>
         </activity>
+
+        <activity
+            android:name=".LoginActivity"
+            android:exported="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
 
     </application>
 </manifest>

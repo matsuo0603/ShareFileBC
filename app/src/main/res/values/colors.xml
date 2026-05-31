@@ -1,10 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="purple_200">#FFBB86FC</color>
-    <color name="purple_500">#FF6200EE</color>
-    <color name="purple_700">#FF3700B3</color>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_700">#FF018786</color>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <!-- iOS 系に寄せた配色（System Blue/Green/Orange相当） -->
+    <color name="primary">#0A84FF</color>
+    <color name="onPrimary">#FFFFFFFF</color>
+
+    <color name="secondary">#30D158</color>
+    <color name="onSecondary">#FF000000</color>
+
+    <color name="tertiary">#FF9F0A</color>
+    <color name="onTertiary">#FF000000</color>
+
+    <!-- 背景・サーフェス（iOSのgrouped背景に近い） -->
+    <color name="background">#F2F2F7</color>
+    <color name="onBackground">#FF000000</color>
+
+    <color name="surface">#FFFFFFFF</color>
+    <color name="onSurface">#FF000000</color>
+
+    <!-- 区切り線・淡い面 -->
+    <color name="outline">#C6C6C8</color>
+    <color name="surfaceVariant">#EFEFF4</color>
+    <color name="onSurfaceVariant">#3A3A3C</color>
+
+    <!-- エラー（System Red に近い） -->
+    <color name="error">#FF3B30</color>
+    <color name="onError">#FFFFFFFF</color>
 </resources>
